@@ -1,0 +1,13 @@
+{
+  "name": "urbe",
+  "version": "0.1.0",
+  "description": "Plataforma de controle e revenda de cotas (tokens) de visualização de filmes integrada à Bunny.net",
+  "scripts": {
+    "start": "python3 -m py_backend.server",
+    "dev": "python3 -m py_backend.server",
+    "test": "python3 -m unittest py_backend.test_service"
+  },
+  "engines": {
+    "python": ">=3.9"
+  }
+}
