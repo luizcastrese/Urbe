@@ -1,0 +1,66 @@
+<svg width="1600" height="900" viewBox="0 0 1600 900" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="urbe logo">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1600" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9DA0A4"/>
+      <stop offset="0.45" stop-color="#8E9296"/>
+      <stop offset="1" stop-color="#7D8186"/>
+    </linearGradient>
+
+    <radialGradient id="coreGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 450) rotate(90) scale(255 455)">
+      <stop offset="0" stop-color="#72C7FF" stop-opacity="0.95"/>
+      <stop offset="0.43" stop-color="#6DC3FB" stop-opacity="0.58"/>
+      <stop offset="1" stop-color="#6DC3FB" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="wideGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(800 450) rotate(90) scale(370 650)">
+      <stop offset="0" stop-color="#6BC0FA" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6BC0FA" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="verticalShade" x1="0" y1="0" x2="0" y2="900" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"/>
+      <stop offset="0.48" stop-color="#FFFFFF" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0.12"/>
+    </linearGradient>
+
+    <pattern id="stripes" width="26" height="26" patternUnits="userSpaceOnUse">
+      <rect width="26" height="26" fill="transparent"/>
+      <rect x="0" y="0" width="3" height="26" fill="#FFFFFF" fill-opacity="0.024"/>
+      <rect x="13" y="0" width="2" height="26" fill="#000000" fill-opacity="0.018"/>
+    </pattern>
+
+    <filter id="blurGlow" x="-30%" y="-40%" width="160%" height="190%">
+      <feGaussianBlur stdDeviation="28"/>
+    </filter>
+
+    <linearGradient id="word" x1="510" y1="450" x2="1110" y2="450" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#5AADEB"/>
+      <stop offset="1" stop-color="#62B6F2"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="900" fill="url(#bg)"/>
+  <rect width="1600" height="900" fill="url(#stripes)"/>
+  <rect width="1600" height="900" fill="url(#verticalShade)"/>
+
+  <ellipse cx="800" cy="450" rx="455" ry="255" fill="url(#coreGlow)"/>
+  <ellipse cx="800" cy="450" rx="640" ry="365" fill="url(#wideGlow)" filter="url(#blurGlow)"/>
+
+  <text
+    x="50%"
+    y="52%"
+    text-anchor="middle"
+    dominant-baseline="middle"
+    font-family="Avenir Next, Montserrat, Segoe UI, Arial, sans-serif"
+    font-size="250"
+    font-weight="500"
+    letter-spacing="0"
+    fill="url(#word)"
+    fill-opacity="0.84"
+    stroke="#3E9AD8"
+    stroke-width="1.2"
+    stroke-opacity="0.90"
+  >
+    urbe
+  </text>
+</svg>

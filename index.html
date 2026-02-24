@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Urbe | Tokens de Visualização</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise"></div>
+    <div class="aura aura-left"></div>
+    <div class="aura aura-right"></div>
+    <div class="sparkles"></div>
+
+    <header class="hero">
+      <div class="hero-content">
+        <p class="eyebrow">Premiere Market</p>
+        <h1 class="brand-title">
+          <img class="brand-logo" src="./assets/urbe-logo.svg" alt="urbe" />
+        </h1>
+        <p class="subtitle">
+          Transforme seu filme em receita recorrente: lance cotas de exibição, monetize cada visualização e amplie seu
+          alcance com um mercado ativo de compradores.
+        </p>
+        <div class="hero-tags" aria-label="Destaques da plataforma">
+          <span>Premiere Tokens</span>
+          <span>Secondary Market</span>
+          <span>One-Time Playback</span>
+        </div>
+      </div>
+      <div class="session" id="session-box">
+        <p id="session-status">Não autenticado</p>
+        <button id="logout-btn" class="ghost" hidden>Sair</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="card card-auth" id="auth-card">
+        <h2>Acesso</h2>
+        <div class="auth-grid">
+          <form id="register-form" class="stack" method="post" action="/api/auth/register">
+            <h3>Criar conta</h3>
+            <input name="name" placeholder="Nome" required />
+            <input name="email" type="email" placeholder="E-mail" required />
+            <input name="password" type="password" placeholder="Senha" minlength="6" required />
+            <button type="submit">Registrar</button>
+          </form>
+
+          <form id="login-form" class="stack" method="post" action="/api/auth/login">
+            <h3>Entrar</h3>
+            <input name="email" type="email" placeholder="E-mail" required />
+            <input name="password" type="password" placeholder="Senha" required />
+            <button type="submit">Login</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="card card-create" id="producer-card" hidden>
+        <h2>Cadastro de Filme</h2>
+        <form id="movie-form" class="stack" method="post" action="/api/movies">
+          <input name="title" placeholder="Título do filme" required />
+          <textarea name="description" rows="3" placeholder="Descrição"></textarea>
+          <div class="row">
+            <input name="director" placeholder="Diretor(a)" />
+            <input name="releaseYear" type="number" min="1888" max="2100" placeholder="Ano de lançamento" />
+          </div>
+          <input name="coverImageUrl" type="url" placeholder="URL da capa do filme" />
+          <div class="row">
+            <select name="genre" required>
+              <option value="" selected disabled>Gênero</option>
+              <option value="Drama">Drama</option>
+              <option value="Comedia">Comédia</option>
+              <option value="Acao">Ação</option>
+              <option value="Suspense">Suspense</option>
+              <option value="Terror">Terror</option>
+              <option value="Romance">Romance</option>
+              <option value="Ficcao Cientifica">Ficção Científica</option>
+              <option value="Documentario">Documentário</option>
+              <option value="Animacao">Animação</option>
+              <option value="Aventura">Aventura</option>
+              <option value="Fantasia">Fantasia</option>
+            </select>
+            <input name="durationMinutes" type="number" min="1" max="600" placeholder="Duração (min)" required />
+          </div>
+          <input name="cast" placeholder="Atores (separados por vírgula)" />
+          <input name="trailerUrl" type="url" placeholder="URL do trailer (YouTube, Vimeo, etc)" />
+          <div class="row">
+            <input name="priceCents" type="number" min="1" placeholder="Preço da cota (centavos)" required />
+            <input name="totalShares" type="number" min="1" placeholder="Quantidade de cotas" required />
+          </div>
+          <div class="row">
+            <input name="bunnyVideoId" placeholder="bunnyVideoId" required />
+            <input name="bunnyLibraryId" placeholder="bunnyLibraryId (opcional)" />
+          </div>
+          <button type="submit">Criar filme</button>
+        </form>
+      </section>
+
+      <section class="card card-movies">
+        <h2>Filmes Disponíveis</h2>
+        <div id="movies-grid" class="grid"></div>
+      </section>
+
+      <section class="card card-market">
+        <h2>Mercado Secundário</h2>
+        <div id="market-grid" class="grid"></div>
+      </section>
+
+      <section class="card card-portfolio" id="portfolio-card" hidden>
+        <h2>Minhas Cotas e Tokens</h2>
+        <div id="shares-grid" class="grid"></div>
+      </section>
+
+      <section class="card card-transactions" id="transactions-card" hidden>
+        <h2>Minhas Transações</h2>
+        <div id="transactions-grid" class="grid"></div>
+      </section>
+    </main>
+
+    <aside class="toast" id="toast"></aside>
+
+    <dialog id="player-dialog">
+      <form method="dialog" class="player-shell">
+        <div class="player-head">
+          <h3 id="player-title">Reprodução</h3>
+          <button type="submit" class="ghost">Fechar</button>
+        </div>
+        <iframe
+          id="player-frame"
+          title="Urbe Player"
+          allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
+          allowfullscreen
+        ></iframe>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
