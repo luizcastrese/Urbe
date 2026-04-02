@@ -11,9 +11,9 @@ class BunnyConfig:
 
 
 @dataclass
-class StripeConfig:
-    secret_key: str
-    api_base: str
+class OpenPixConfig:
+    app_id: str
+    api_base: str = "https://api.openpix.com.br/api/v1"
 
 
 @dataclass
@@ -22,7 +22,7 @@ class PaymentsConfig:
     currency: str
     success_url: str
     cancel_url: str
-    stripe: StripeConfig
+    openpix: OpenPixConfig
 
 
 @dataclass
@@ -38,8 +38,8 @@ class Config:
 
 def load_config():
     root_dir = os.getcwd()
-    stripe_secret = os.getenv("STRIPE_SECRET_KEY", "")
-    payments_provider = os.getenv("PAYMENTS_PROVIDER", "stripe" if stripe_secret else "mock")
+    openpix_app_id = os.getenv("OPENPIX_APP_ID", "")
+    payments_provider = os.getenv("PAYMENTS_PROVIDER", "openpix" if openpix_app_id else "mock")
     payments_currency = os.getenv("PAYMENTS_CURRENCY", "BRL").upper()
 
     return Config(
@@ -59,16 +59,13 @@ def load_config():
             currency=payments_currency,
             success_url=os.getenv(
                 "PAYMENTS_CHECKOUT_SUCCESS_URL",
-                "http://localhost:3000/?checkout=success&orderId={ORDER_ID}&session_id={CHECKOUT_SESSION_ID}",
+                "http://localhost:3000/?checkout=success&orderId={ORDER_ID}",
             ),
             cancel_url=os.getenv(
                 "PAYMENTS_CHECKOUT_CANCEL_URL",
-                "http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}&session_id={CHECKOUT_SESSION_ID}",
+                "http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}",
             ),
-            stripe=StripeConfig(
-                secret_key=stripe_secret,
-                api_base=os.getenv("STRIPE_API_BASE", "https://api.stripe.com/v1"),
-            ),
+            openpix=OpenPixConfig(app_id=openpix_app_id),
         ),
     )
 
