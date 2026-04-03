@@ -12,17 +12,16 @@ from .config import load_config
 from .errors import AppError
 from .payments import create_payment_gateway
 from .service import UrbeService
-from .store import JsonStore
+from .store import JsonStore, PostgresStore
 from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes
 
 
 ROOT_DIR = os.getcwd()
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
 CONFIG = load_config()
-STORE = JsonStore(CONFIG.db_file)
+STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
 SERVICE = UrbeService(STORE, CONFIG)
 PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
-
 
 def get_cors_headers():
     return {
@@ -31,7 +30,6 @@ def get_cors_headers():
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Max-Age": "86400",
     }
-
 
 def render_watch_error_page(message):
     safe = html.escape(str(message or "Falha ao abrir reproducao."))
@@ -63,11 +61,10 @@ def render_watch_error_page(message):
   </head>
   <body>
     <main>
-      <p>{safe}</p>
+      <p>{{safe}}</p>
     </main>
   </body>
 </html>"""
-
 
 def render_watch_page(title, embed_url):
     safe_title = html.escape(str(title or "Urbe"))
@@ -77,7 +74,7 @@ def render_watch_page(title, embed_url):
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{safe_title} | Urbe</title>
+    <title>{{safe_title}} | Urbe</title>
     <style>
       body {{ margin: 0; background: #000; }}
       iframe {{
@@ -89,19 +86,18 @@ def render_watch_page(title, embed_url):
   </head>
   <body>
     <iframe
-      src="{safe_embed}"
-      title="{safe_title}"
+      src="{{safe_embed}}"
+      title="{{safe_title}}"
       allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
       allowfullscreen
     ></iframe>
   </body>
 </html>"""
 
-
 def safe_public_path(raw_path):
     decoded = urllib.parse.unquote(raw_path)
     normalized = os.path.normpath(decoded)
-    normalized = normalized.lstrip("/\\")
+    normalized = normalized.lstrip("/\")
     if normalized in {"", "."}:
         normalized = "index.html"
 
@@ -162,7 +158,6 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/me/transactions$"), "auth": True, "handler": "api_me_transactions"},
         {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
         {"method": "POST", "pattern": re.compile(r"^/api/bunny/videos$"), "auth": True, "handler": "api_bunny_create_video"},
-
         # === NOVA ROTA DO WEBHOOK OPENPIX ===
         {
             "method": "POST",
@@ -171,6 +166,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
             "handler": "api_payments_openpix_webhook",
         },
     ]
+
     def log_message(self, format_string, *args):  # noqa: A003
         # Keep output concise for local dev.
         sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format_string % args))
@@ -381,7 +377,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
     # API handlers
     def api_health(self, _ctx):
         return 200, {"status": "ok", "service": "urbe"}, {}
-            # ==================== NOVO HANDLER DO WEBHOOK OPENPIX ====================
+        # ==================== NOVO HANDLER DO WEBHOOK OPENPIX ====================
     def api_payments_openpix_webhook(self, _ctx):
         body = _ctx["body"]
         signature = self.headers.get("X-Openpix-Signature")
@@ -518,4 +514,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
