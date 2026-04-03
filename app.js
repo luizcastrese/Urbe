@@ -696,7 +696,7 @@ function mostrarModalPix(payload, movieTitle) {
     }
   }, 1000);
 
-  document.getElementById("pixModal").style.display = "block";
+  document.getElementById("pixModal").hidden = false;
 }
 
 function copiarPix() {
@@ -720,7 +720,7 @@ function copiarPix() {
 }
 
 function fecharPixModal() {
-  document.getElementById("pixModal").style.display = "none";
+  document.getElementById("pixModal").hidden = true;
   if (pixTimerInterval) clearInterval(pixTimerInterval);
   pixOrderId = "";
   pixSessionId = "";
