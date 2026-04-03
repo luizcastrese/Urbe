@@ -200,13 +200,13 @@ function renderMovies() {
       const trailerUrl = safeExternalUrl(movie.trailerUrl);
       const coverImageUrl = safeExternalUrl(movie.coverImageUrl);
       const buyBtn = canBuy
-        ? `<button data-action="buy-primary" data-movie-id="${movie.id}">Comprar cota primária</button>`
+        ? `<button data-action=\"buy-primary\" data-movie-id=\"${movie.id}\">Comprar cota primária</button>`
         : "";
 
       return `
-        <article class="item item-movie">
-          <small class="item-kicker">Feature Drop</small>
-          ${coverImageUrl ? `<img class="movie-cover" src="${escapeHtml(coverImageUrl)}" alt="Capa de ${escapeHtml(movie.title)}" loading="lazy" />` : ""}
+        <article class=\"item item-movie\">
+          <small class=\"item-kicker\">Feature Drop</small>
+          ${coverImageUrl ? `<img class=\"movie-cover\" src=\"${escapeHtml(coverImageUrl)}\" alt=\"Capa de ${escapeHtml(movie.title)}\" loading=\"lazy\" />` : ""}
           <strong>${escapeHtml(movie.title)}</strong>
           <small>${escapeHtml(movie.description || "Sem descrição")}</small>
           <small>Gênero: ${escapeHtml(movie.genre || "Não informado")}</small>
@@ -216,7 +216,7 @@ function renderMovies() {
           <small>Elenco: ${escapeHtml(castLabel(movie.cast))}</small>
           ${
             trailerUrl
-              ? `<a class="trailer-link" href="${escapeHtml(trailerUrl)}" target="_blank" rel="noopener noreferrer">Assistir trailer</a>`
+              ? `<a class=\"trailer-link\" href=\"${escapeHtml(trailerUrl)}\" target=\"_blank\" rel=\"noopener noreferrer\">Assistir trailer</a>`
               : "<small>Trailer: não informado</small>"
           }
           <small>Produtor: ${escapeHtml(movie.producer?.name || "-")}</small>
@@ -245,9 +245,9 @@ function renderListings() {
       const trailerUrl = safeExternalUrl(listing.movie?.trailerUrl);
       const coverImageUrl = safeExternalUrl(listing.movie?.coverImageUrl);
       return `
-        <article class="item item-market">
-          <small class="item-kicker">Secondary Offer</small>
-          ${coverImageUrl ? `<img class="movie-cover" src="${escapeHtml(coverImageUrl)}" alt="Capa de ${escapeHtml(listing.movie?.title || "Filme")}" loading="lazy" />` : ""}
+        <article class=\"item item-market\">
+          <small class=\"item-kicker\">Secondary Offer</small>
+          ${coverImageUrl ? `<img class=\"movie-cover\" src=\"${escapeHtml(coverImageUrl)}\" alt=\"Capa de ${escapeHtml(listing.movie?.title || "Filme")}\" loading=\"lazy\" />` : ""}
           <strong>${escapeHtml(listing.movie?.title || "Filme")}</strong>
           <small>Gênero: ${escapeHtml(listing.movie?.genre || "Não informado")}</small>
           <small>Duração: ${formatDurationMinutes(listing.movie?.durationMinutes)}</small>
@@ -256,13 +256,13 @@ function renderListings() {
           <small>Elenco: ${escapeHtml(castLabel(listing.movie?.cast))}</small>
           ${
             trailerUrl
-              ? `<a class="trailer-link" href="${escapeHtml(trailerUrl)}" target="_blank" rel="noopener noreferrer">Assistir trailer</a>`
+              ? `<a class=\"trailer-link\" href=\"${escapeHtml(trailerUrl)}\" target=\"_blank\" rel=\"noopener noreferrer\">Assistir trailer</a>`
               : "<small>Trailer: não informado</small>"
           }
           <small>Anúncio: ${listing.id}</small>
           <small>Vendedor: ${escapeHtml(listing.seller?.name || "-")}</small>
           <small>Preço: ${formatPriceFromCents(listing.priceCents)}</small>
-          ${canBuy ? `<button data-action="buy-listing" data-listing-id="${listing.id}">Comprar anúncio</button>` : ""}
+          ${canBuy ? `<button data-action=\"buy-listing\" data-listing-id=\"${listing.id}\">Comprar anúncio</button>` : ""}
         </article>
       `;
     })
@@ -291,22 +291,22 @@ function renderShares() {
       const actions = [];
       if (share.state === "owned" && token) {
         actions.push(
-          `<button data-action="consume-token" data-token="${token}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir</button>`
+          `<button data-action=\"consume-token\" data-token=\"${token}\" data-movie-title=\"${escapeHtml(share.movie?.title || "Filme")}\">Assistir</button>`
         );
-        actions.push(`<button class="ghost" data-action="create-listing" data-share-id="${share.id}">Anunciar revenda</button>`);
+        actions.push(`<button class=\"ghost\" data-action=\"create-listing\" data-share-id=\"${share.id}\">Anunciar revenda</button>`);
       }
 
       if (share.state === "listed" && share.activeListing?.id) {
         actions.push(
-          `<button class="ghost" data-action="cancel-listing" data-listing-id="${share.activeListing.id}">Cancelar anúncio</button>`
+          `<button class=\"ghost\" data-action=\"cancel-listing\" data-listing-id=\"${share.activeListing.id}\">Cancelar anúncio</button>`
         );
       }
 
       return `
-        <article class="item item-share">
-          <small class="item-kicker">My Position</small>
+        <article class=\"item item-share\">
+          <small class=\"item-kicker\">My Position</small>
           <strong>${escapeHtml(share.movie?.title || "Filme")}</strong>
-          <span class="badge ${badge.cls}">${badge.label}</span>
+          <span class=\"badge ${badge.cls}\">${badge.label}</span>
           <small>Cota: ${share.id}</small>
           ${tokenLine}
           ${
@@ -314,7 +314,7 @@ function renderShares() {
               ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado em checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
               : ""
           }
-          <div class="inline">${actions.join("")}</div>
+          <div class=\"inline\">${actions.join("")}</div>
         </article>
       `;
     })
@@ -335,8 +335,8 @@ function renderTransactions() {
   refs.transactionsGrid.innerHTML = state.transactions
     .map(
       (txn) => `
-      <article class="item item-transaction">
-        <small class="item-kicker">Ledger Event</small>
+      <article class=\"item item-transaction\">
+        <small class=\"item-kicker\">Ledger Event</small>
         <strong>${escapeHtml(txn.movieTitle)}</strong>
         <small>Tipo: ${escapeHtml(txn.type)}</small>
         <small>Valor: ${formatPriceFromCents(txn.priceCents)}</small>
@@ -530,8 +530,16 @@ async function buyPrimary(movieId) {
     return;
   }
 
+  const movie = state.movies.find((item) => item.id === movieId);
+  const movieTitle = movie ? movie.title : "Cota";
+
   try {
     const response = await api(`/api/payments/primary/${movieId}/checkout`, { method: "POST", body: {} });
+
+    if (response.checkout?.provider === "openpix") {
+      mostrarModalPix({ order: response.order, checkout: response.checkout }, movieTitle);
+      return;
+    }
 
     if (response.purchase) {
       notify("Pagamento aprovado. Cota comprada no mercado primário.");
@@ -565,8 +573,16 @@ async function buyListing(listingId) {
     return;
   }
 
+  const listing = state.listings.find((item) => item.id === listingId);
+  const movieTitle = listing?.movie?.title || "Cota";
+
   try {
     const response = await api(`/api/payments/listings/${listingId}/checkout`, { method: "POST", body: {} });
+
+    if (response.checkout?.provider === "openpix") {
+      mostrarModalPix({ order: response.order, checkout: response.checkout }, movieTitle);
+      return;
+    }
 
     if (response.purchase) {
       notify("Pagamento aprovado. Compra de revenda concluída com novo token.");
@@ -639,16 +655,30 @@ async function consumeToken(token, movieTitle) {
     notify(error.message, true);
   }
 }
-// ==================== FUNÇÕES PIX (adicione no FINAL do app.js) ====================
-let pixOrderId = null;
+
+// ==================== FUNÇÕES PIX ====================
+let pixOrderId = "";
+let pixSessionId = "";
 let pixTimerInterval = null;
 
-function mostrarModalPix(order, movieTitle) {
-  pixOrderId = order.id || order.orderId;
+function mostrarModalPix(payload, movieTitle) {
+  const order = payload?.order || payload || {};
+  const checkout = payload?.checkout || payload || {};
+
+  pixOrderId = order.id || payload?.orderId || payload?.id || "";
+  pixSessionId = checkout.sessionId || payload?.sessionId || "";
+
+  const qrCodeRaw = checkout.qrCodeBase64 || payload?.qrCodeBase64 || "";
+  const qrCodeSrc = qrCodeRaw && !qrCodeRaw.startsWith("data:") ? `data:image/png;base64,${qrCodeRaw}` : qrCodeRaw;
 
   document.getElementById("pixMovieTitle").textContent = movieTitle || "Cota de visualização";
-  document.getElementById("pixQrCode").src = order.qrCodeBase64 || "";
-  document.getElementById("pixCopiaCola").value = order.pixCopiaECola || "";
+  document.getElementById("pixQrCode").src = qrCodeSrc;
+  document.getElementById("pixCopiaCola").value = checkout.pixCopiaECola || payload?.pixCopiaECola || "";
+
+  if (!pixOrderId || !qrCodeSrc) {
+    notify("Não foi possível preparar o checkout Pix.", true);
+    return;
+  }
 
   // Timer de 15 minutos
   let timeLeft = 15 * 60;
@@ -671,51 +701,50 @@ function mostrarModalPix(order, movieTitle) {
 
 function copiarPix() {
   const input = document.getElementById("pixCopiaCola");
+  if (!input?.value) {
+    notify("Código Pix indisponível.", true);
+    return;
+  }
+
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(input.value).then(
+      () => notify("✅ Código Pix copiado!"),
+      () => notify("Não foi possível copiar o código Pix.", true)
+    );
+    return;
+  }
+
   input.select();
   document.execCommand("copy");
-  alert("✅ Código Pix copiado!");
+  notify("✅ Código Pix copiado!");
 }
 
 function fecharPixModal() {
   document.getElementById("pixModal").style.display = "none";
   if (pixTimerInterval) clearInterval(pixTimerInterval);
+  pixOrderId = "";
+  pixSessionId = "";
 }
 
 async function verificarPagamentoPix() {
   if (!pixOrderId) return;
   try {
-    const res = await fetch(`/api/payments/orders/${pixOrderId}/confirm`, { method: "POST" });
-    const data = await res.json();
-    if (data.paid || data.status === "complete") {
-      alert("🎉 Pagamento confirmado! Token liberado.");
-      fecharPixModal();
-      location.reload();
-    } else {
-      alert("⏳ Ainda não detectamos o pagamento. Tente novamente em alguns segundos.");
-    }
-  } catch (e) {
-    alert("Erro ao verificar pagamento");
-  }
-}
-
-// Exemplo de como chamar o modal (já adaptado para OpenPix)
-async function buyPrimary(movieId) {
-  const movie = state.movies.find(m => m.id === movieId);
-  const movieTitle = movie ? movie.title : "Cota";
-
-  try {
-    const checkout = await api(`/api/payments/primary/${movieId}/checkout`, {
-      method: "POST"
+    const data = await api(`/api/payments/orders/${pixOrderId}/confirm`, {
+      method: "POST",
+      body: { sessionId: pixSessionId || undefined }
     });
+    const isPaid = Boolean(data.purchase) || Boolean(data.alreadyPaid) || data.order?.status === "paid";
 
-    if (checkout.provider === "openpix") {
-      mostrarModalPix(checkout, movieTitle);
-    } else {
-      alert("Checkout criado (mock)");
+    if (isPaid) {
+      notify("🎉 Pagamento confirmado! Token liberado.");
+      fecharPixModal();
+      await refreshData();
+      return;
     }
-  } catch (e) {
-    console.error(e);
-    alert("Erro ao gerar Pix");
+
+    notify("⏳ Ainda não detectamos o pagamento. Tente novamente em alguns segundos.");
+  } catch (error) {
+    notify(error?.message || "Erro ao verificar pagamento", true);
   }
 }
 
