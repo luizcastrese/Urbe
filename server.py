@@ -23,6 +23,7 @@ STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore
 SERVICE = UrbeService(STORE, CONFIG)
 PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
 
+
 def get_cors_headers():
     return {
         "Access-Control-Allow-Origin": "*",
@@ -61,7 +62,7 @@ def render_watch_error_page(message):
   </head>
   <body>
     <main>
-      <p>{{safe}}</p>
+      <p>{safe}</p>
     </main>
   </body>
 </html>"""
@@ -377,7 +378,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
     # API handlers
     def api_health(self, _ctx):
         return 200, {"status": "ok", "service": "urbe"}, {}
-        # ==================== NOVO HANDLER DO WEBHOOK OPENPIX ====================
+
     def api_payments_openpix_webhook(self, _ctx):
         body = _ctx["body"]
         signature = self.headers.get("X-Openpix-Signature")
