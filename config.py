@@ -1,7 +1,6 @@
 import os
 from dataclasses import dataclass
 
-
 @dataclass
 class BunnyConfig:
     api_key: str
@@ -9,12 +8,12 @@ class BunnyConfig:
     embed_token_key: str
     iframe_host: str
 
-
 @dataclass
 class OpenPixConfig:
     app_id: str
     api_base: str = "https://api.openpix.com.br/api/v1"
-
+    split_pix_key: str = ""
+    split_percent: int = 10
 
 @dataclass
 class PaymentsConfig:
@@ -23,7 +22,6 @@ class PaymentsConfig:
     success_url: str
     cancel_url: str
     openpix: OpenPixConfig
-
 
 @dataclass
 class Config:
@@ -35,12 +33,23 @@ class Config:
     bunny: BunnyConfig
     payments: PaymentsConfig
 
-
 def load_config():
     root_dir = os.getcwd()
     openpix_app_id = os.getenv("OPENPIX_APP_ID", "")
     payments_provider = os.getenv("PAYMENTS_PROVIDER", "openpix" if openpix_app_id else "mock")
     payments_currency = os.getenv("PAYMENTS_CURRENCY", "BRL").upper()
+    openpix_split_pix_key = os.getenv("OPENPIX_SPLIT_PIX_KEY", "").strip()
+
+    split_percent_raw = os.getenv("OPENPIX_SPLIT_PERCENT", "10")
+    try:
+        split_percent = int(split_percent_raw)
+    except ValueError:
+        split_percent = 10
+
+    if split_percent < 0:
+        split_percent = 0
+    if split_percent > 100:
+        split_percent = 100
 
     return Config(
         port=int(os.getenv("PORT", "3000")),
@@ -65,7 +74,10 @@ def load_config():
                 "PAYMENTS_CHECKOUT_CANCEL_URL",
                 "http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}",
             ),
-            openpix=OpenPixConfig(app_id=openpix_app_id),
+            openpix=OpenPixConfig(
+                app_id=openpix_app_id,
+                split_pix_key=openpix_split_pix_key,
+                split_percent=split_percent,
+            ),
         ),
     )
-
