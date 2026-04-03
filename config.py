@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 
+
 @dataclass
 class BunnyConfig:
     api_key: str
@@ -8,12 +9,14 @@ class BunnyConfig:
     embed_token_key: str
     iframe_host: str
 
+
 @dataclass
 class OpenPixConfig:
     app_id: str
     api_base: str = "https://api.openpix.com.br/api/v1"
     split_pix_key: str = ""
     split_percent: int = 10
+
 
 @dataclass
 class PaymentsConfig:
@@ -23,18 +26,22 @@ class PaymentsConfig:
     cancel_url: str
     openpix: OpenPixConfig
 
+
 @dataclass
 class Config:
     port: int
     db_file: str
+    database_url: str
     session_duration_days: int
     checkout_reservation_minutes: int
     playback_session_seconds: int
     bunny: BunnyConfig
     payments: PaymentsConfig
 
+
 def load_config():
     root_dir = os.getcwd()
+    database_url = os.getenv("DATABASE_URL", "").strip()
     openpix_app_id = os.getenv("OPENPIX_APP_ID", "")
     payments_provider = os.getenv("PAYMENTS_PROVIDER", "openpix" if openpix_app_id else "mock")
     payments_currency = os.getenv("PAYMENTS_CURRENCY", "BRL").upper()
@@ -54,6 +61,7 @@ def load_config():
     return Config(
         port=int(os.getenv("PORT", "3000")),
         db_file=os.getenv("DB_FILE", os.path.join(root_dir, "data", "urbe-db.json")),
+        database_url=database_url,
         session_duration_days=int(os.getenv("SESSION_DURATION_DAYS", "30")),
         checkout_reservation_minutes=int(os.getenv("CHECKOUT_RESERVATION_MINUTES", "15")),
         playback_session_seconds=int(os.getenv("PLAYBACK_SESSION_SECONDS", "120")),
