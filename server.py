@@ -381,6 +381,28 @@ class UrbeHandler(BaseHTTPRequestHandler):
     # API handlers
     def api_health(self, _ctx):
         return 200, {"status": "ok", "service": "urbe"}, {}
+            # ==================== NOVO HANDLER DO WEBHOOK OPENPIX ====================
+    def api_payments_openpix_webhook(self, _ctx):
+        body = _ctx["body"]
+        signature = self.headers.get("X-Openpix-Signature")
+
+        if not signature:
+            return 401, {"error": "assinatura ausente"}, {}
+
+        event = body.get("event")
+        if event == "pix_received":
+            correlation_id = body.get("data", {}).get("correlationID")
+            if correlation_id:
+                try:
+                    SERVICE.confirm_order_payment(correlation_id)
+                    return 200, {"status": "ok"}, {}
+                except Exception as e:
+                    print(f"Erro no webhook OpenPix: {e}")
+                    return 500, {"error": "falha interna"}, {}
+            else:
+                return 400, {"error": "correlationID ausente"}, {}
+        else:
+            return 200, {"status": "ignored"}, {}
 
     def api_payments_config(self, _ctx):
         return 200, {"payments": SERVICE.get_payment_config()}, {}
