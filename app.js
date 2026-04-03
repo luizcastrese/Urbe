@@ -639,6 +639,85 @@ async function consumeToken(token, movieTitle) {
     notify(error.message, true);
   }
 }
+// ==================== FUNÇÕES PIX (adicione no FINAL do app.js) ====================
+let pixOrderId = null;
+let pixTimerInterval = null;
+
+function mostrarModalPix(order, movieTitle) {
+  pixOrderId = order.id || order.orderId;
+
+  document.getElementById("pixMovieTitle").textContent = movieTitle || "Cota de visualização";
+  document.getElementById("pixQrCode").src = order.qrCodeBase64 || "";
+  document.getElementById("pixCopiaCola").value = order.pixCopiaECola || "";
+
+  // Timer de 15 minutos
+  let timeLeft = 15 * 60;
+  const timerEl = document.getElementById("pixTimer");
+
+  if (pixTimerInterval) clearInterval(pixTimerInterval);
+  pixTimerInterval = setInterval(() => {
+    timeLeft--;
+    const min = Math.floor(timeLeft / 60);
+    const sec = timeLeft % 60;
+    timerEl.textContent = `${min}:${sec < 10 ? "0" : ""}${sec}`;
+    if (timeLeft <= 0) {
+      clearInterval(pixTimerInterval);
+      timerEl.textContent = "EXPIRADO";
+    }
+  }, 1000);
+
+  document.getElementById("pixModal").style.display = "block";
+}
+
+function copiarPix() {
+  const input = document.getElementById("pixCopiaCola");
+  input.select();
+  document.execCommand("copy");
+  alert("✅ Código Pix copiado!");
+}
+
+function fecharPixModal() {
+  document.getElementById("pixModal").style.display = "none";
+  if (pixTimerInterval) clearInterval(pixTimerInterval);
+}
+
+async function verificarPagamentoPix() {
+  if (!pixOrderId) return;
+  try {
+    const res = await fetch(`/api/payments/orders/${pixOrderId}/confirm`, { method: "POST" });
+    const data = await res.json();
+    if (data.paid || data.status === "complete") {
+      alert("🎉 Pagamento confirmado! Token liberado.");
+      fecharPixModal();
+      location.reload();
+    } else {
+      alert("⏳ Ainda não detectamos o pagamento. Tente novamente em alguns segundos.");
+    }
+  } catch (e) {
+    alert("Erro ao verificar pagamento");
+  }
+}
+
+// Exemplo de como chamar o modal (já adaptado para OpenPix)
+async function buyPrimary(movieId) {
+  const movie = state.movies.find(m => m.id === movieId);
+  const movieTitle = movie ? movie.title : "Cota";
+
+  try {
+    const checkout = await api(`/api/payments/primary/${movieId}/checkout`, {
+      method: "POST"
+    });
+
+    if (checkout.provider === "openpix") {
+      mostrarModalPix(checkout, movieTitle);
+    } else {
+      alert("Checkout criado (mock)");
+    }
+  } catch (e) {
+    console.error(e);
+    alert("Erro ao gerar Pix");
+  }
+}
 
 function bindGlobalActions() {
   document.body.addEventListener("click", async (event) => {
