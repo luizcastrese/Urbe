@@ -1,1 +1,2 @@
 # This backend currently uses only Python standard library modules.
+psycopg[binary]>=3.1
