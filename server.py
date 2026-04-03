@@ -162,8 +162,15 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/me/transactions$"), "auth": True, "handler": "api_me_transactions"},
         {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
         {"method": "POST", "pattern": re.compile(r"^/api/bunny/videos$"), "auth": True, "handler": "api_bunny_create_video"},
-    ]
 
+        # === NOVA ROTA DO WEBHOOK OPENPIX ===
+        {
+            "method": "POST",
+            "pattern": re.compile(r"^/api/payments/webhook/openpix$"),
+            "auth": False,
+            "handler": "api_payments_openpix_webhook",
+        },
+    ]
     def log_message(self, format_string, *args):  # noqa: A003
         # Keep output concise for local dev.
         sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format_string % args))
