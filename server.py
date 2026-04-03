@@ -15,14 +15,12 @@ from .service import UrbeService
 from .store import JsonStore, PostgresStore
 from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes
 
-
 ROOT_DIR = os.getcwd()
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
 CONFIG = load_config()
 STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
 SERVICE = UrbeService(STORE, CONFIG)
 PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
-
 
 def get_cors_headers():
     return {
@@ -62,7 +60,7 @@ def render_watch_error_page(message):
   </head>
   <body>
     <main>
-      <p>{safe}</p>
+      <p>{{safe}}</p>
     </main>
   </body>
 </html>"""
@@ -98,7 +96,7 @@ def render_watch_page(title, embed_url):
 def safe_public_path(raw_path):
     decoded = urllib.parse.unquote(raw_path)
     normalized = os.path.normpath(decoded)
-    normalized = normalized.lstrip("/\")
+    normalized = normalized.lstrip("/\\")
     if normalized in {"", "."}:
         normalized = "index.html"
 
@@ -110,7 +108,6 @@ def safe_public_path(raw_path):
     if os.path.isdir(file_path):
         file_path = os.path.join(file_path, "index.html")
     return file_path
-
 
 class UrbeHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -506,12 +503,10 @@ class UrbeHandler(BaseHTTPRequestHandler):
         )
         return 201, {"bunnyVideo": bunny_video}, {}
 
-
 def run():
     server = ThreadingHTTPServer(("0.0.0.0", CONFIG.port), UrbeHandler)
     print(f"Urbe disponivel em http://localhost:{CONFIG.port}")
     server.serve_forever()
-
 
 if __name__ == "__main__":
     run()
