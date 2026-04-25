@@ -13,7 +13,7 @@ from .errors import AppError
 from .payments import create_payment_gateway
 from .service import UrbeService
 from .store import JsonStore, PostgresStore
-from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes
+from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes, verify_openpix_signature
 
 ROOT_DIR = os.getcwd()
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
@@ -225,7 +225,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
             raise AppError("Payload muito grande.", 413, "PAYLOAD_TOO_LARGE")
 
         raw = self.rfile.read(size) if size > 0 else b""
-        return read_json_bytes(raw)
+        return read_json_bytes(raw), raw
 
     def _handle_api(self, method, path, parsed_url):
         cors_headers = get_cors_headers()
@@ -238,7 +238,10 @@ class UrbeHandler(BaseHTTPRequestHandler):
                 continue
 
             try:
-                body = self._read_body() if method in {"POST", "PUT", "PATCH"} else {}
+                if method in {"POST", "PUT", "PATCH"}:
+                    body, raw_body = self._read_body()
+                else:
+                    body, raw_body = {}, b""
                 session_token = None
                 user = None
                 if route["auth"]:
@@ -250,6 +253,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
                 query_params = urllib.parse.parse_qs(parsed_url.query)
                 context = {
                     "body": body,
+                    "rawBody": raw_body,
                     "user": user,
                     "sessionToken": session_token,
                     "query": query_params,
@@ -378,10 +382,15 @@ class UrbeHandler(BaseHTTPRequestHandler):
 
     def api_payments_openpix_webhook(self, _ctx):
         body = _ctx["body"]
+        raw_body = _ctx.get("rawBody", b"")
         signature = self.headers.get("X-Openpix-Signature")
+        secret = CONFIG.payments.openpix.webhook_secret
 
-        if not signature:
-            return 401, {"error": "assinatura ausente"}, {}
+        if not secret:
+            return 500, {"error": "OPENPIX_WEBHOOK_SECRET nao configurado"}, {}
+
+        if not signature or not verify_openpix_signature(raw_body, signature, secret):
+            return 401, {"error": "assinatura invalida"}, {}
 
         event = body.get("event")
         if event == "pix_received":
@@ -502,6 +511,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
             thumbnail_time=ctx["body"].get("thumbnailTime"),
         )
         return 201, {"bunnyVideo": bunny_video}, {}
+
 
 def run():
     server = ThreadingHTTPServer(("0.0.0.0", CONFIG.port), UrbeHandler)
