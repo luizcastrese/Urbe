@@ -16,6 +16,7 @@ class OpenPixConfig:
     api_base: str = "https://api.openpix.com.br/api/v1"
     split_pix_key: str = ""
     split_percent: int = 10
+    webhook_secret: str = ""
 
 
 @dataclass
@@ -46,6 +47,7 @@ def load_config():
     payments_provider = os.getenv("PAYMENTS_PROVIDER", "openpix" if openpix_app_id else "mock")
     payments_currency = os.getenv("PAYMENTS_CURRENCY", "BRL").upper()
     openpix_split_pix_key = os.getenv("OPENPIX_SPLIT_PIX_KEY", "").strip()
+    openpix_webhook_secret = os.getenv("OPENPIX_WEBHOOK_SECRET", "").strip()
 
     split_percent_raw = os.getenv("OPENPIX_SPLIT_PERCENT", "10")
     try:
@@ -86,6 +88,7 @@ def load_config():
                 app_id=openpix_app_id,
                 split_pix_key=openpix_split_pix_key,
                 split_percent=split_percent,
+                webhook_secret=openpix_webhook_secret,
             ),
         ),
     )
