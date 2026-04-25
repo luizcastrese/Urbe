@@ -114,3 +114,16 @@ def fill_template(template, values):
     for key, value in (values or {}).items():
         result = result.replace(f"{{{key}}}", str(value if value is not None else ""))
     return result
+
+
+def verify_openpix_signature(raw_body, signature, secret):
+    if not raw_body or not signature or not secret:
+        return False
+
+    raw_signature = str(signature).strip()
+    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
+
+    if raw_signature.startswith("sha256="):
+        raw_signature = raw_signature.split("=", 1)[1]
+
+    return hmac.compare_digest(raw_signature, expected)
