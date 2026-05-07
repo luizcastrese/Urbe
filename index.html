@@ -94,6 +94,24 @@
             <input name="priceCents" type="number" min="1" placeholder="Preço da cota (centavos)" required />
             <input name="totalShares" type="number" min="1" placeholder="Quantidade de cotas" required />
           </div>
+
+          <div class="row" aria-label="Opções de publicação na Bunny.net">
+            <div class="item">
+              <small class="item-kicker">Opção 1</small>
+              <strong>Enviar primeiro para a Bunny</strong>
+              <small>Abra o painel Bunny Stream, crie ou envie o vídeo, copie o Video ID e volte para finalizar o cadastro na Urbe.</small>
+              <button
+                type="button"
+                onclick="window.open('https://dash.bunny.net/stream', '_blank', 'noopener,noreferrer')"
+              >Abrir Bunny Stream</button>
+            </div>
+            <div class="item">
+              <small class="item-kicker">Opção 2</small>
+              <strong>Já tenho os IDs</strong>
+              <small>Use esta opção quando o vídeo já estiver na Bunny. Cole abaixo o bunnyVideoId e, se necessário, o bunnyLibraryId.</small>
+            </div>
+          </div>
+
           <div class="row">
             <input name="bunnyVideoId" placeholder="bunnyVideoId" required />
             <input name="bunnyLibraryId" placeholder="bunnyLibraryId (opcional)" />
