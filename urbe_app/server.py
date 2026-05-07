@@ -1,11 +1,4 @@
-from pathlib import Path
-import sys
+from ._loader import export_public, load_root_module
 
-ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from server import run
-
-if __name__ == "__main__":
-    run()
+module = load_root_module("urbe_app._legacy_server", "server.py")
+export_public(module, globals())
