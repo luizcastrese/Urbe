@@ -769,7 +769,128 @@ dialog::backdrop {
   }
 }
 
-@media (max-width: 1024px) {
+
+/* ==================== PIX MODAL ==================== */
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.82);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.pix-card {
+  width: 100%;
+  max-width: 420px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  padding: 1.6rem 1.4rem;
+  background:
+    linear-gradient(160deg, rgba(255, 231, 183, 0.12) 0%, transparent 40%),
+    linear-gradient(180deg, rgba(37, 21, 18, 0.94) 0%, rgba(14, 10, 9, 0.98) 100%);
+  box-shadow: 0 28px 56px rgba(0, 0, 0, 0.6);
+  display: grid;
+  gap: 0.85rem;
+  text-align: center;
+  position: relative;
+}
+
+.pix-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  border-radius: 18px 18px 0 0;
+  background: linear-gradient(90deg, transparent, rgba(239, 211, 155, 0.8), transparent);
+  pointer-events: none;
+}
+
+.pix-card-title {
+  margin: 0;
+  color: #ffe8bf;
+  font-size: 1rem;
+  font-weight: 400;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+}
+
+.pix-movie-title {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.pix-qr-wrap {
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+
+.pix-qr-img {
+  width: 100%;
+  max-width: 240px;
+  height: auto;
+  border-radius: 8px;
+  display: block;
+  margin: 0 auto;
+}
+
+.pix-copy-wrap {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.pix-copy-input {
+  text-align: center;
+}
+
+.pix-btn-copy {
+  background: linear-gradient(145deg, rgba(126, 228, 191, 0.3) 0%, rgba(74, 168, 131, 0.25) 100%);
+  border-color: rgba(126, 228, 191, 0.4);
+  color: #d6fbe9;
+  box-shadow: none;
+}
+
+.pix-btn-copy:hover {
+  box-shadow: 0 0 0 3px rgba(126, 228, 191, 0.18);
+}
+
+.pix-timer {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--danger);
+  letter-spacing: 0.04em;
+}
+
+.pix-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.pix-btn-confirm {
+  width: 100%;
+}
+
+.pix-btn-close {
+  font-size: 0.85rem;
+  color: var(--muted);
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+}
+
   .hero {
     grid-template-columns: 1fr;
   }

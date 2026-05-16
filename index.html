@@ -22,7 +22,7 @@
       <div class="hero-content">
         <p class="eyebrow">Premiere Market</p>
         <h1 class="brand-title">
-          <img class="brand-logo" src="./assets/urbe-logo.svg" alt="urbe" />
+          <img class="brand-logo" src="./urbe-logo.svg" alt="urbe" />
         </h1>
         <p class="subtitle">
           Transforme seu filme em receita recorrente: lance cotas de exibição, monetize cada visualização e amplie seu
@@ -140,49 +140,30 @@
       </form>
     </dialog>
 
-    <script src="./app.js"></script>
     <!-- ==================== MODAL PIX ==================== -->
-<div id="pixModal" class="modal" style="display: none;">
-  <div class="modal-content" style="max-width: 420px; margin: 5% auto; background: #fff; border-radius: 16px; padding: 24px; box-shadow: 0 10px 30px rgba(0,0,0,0.3); text-align: center; font-family: system-ui, sans-serif;">
-    
-    <h2 style="margin: 0 0 8px;">Pagamento via Pix</h2>
-    <p id="pixMovieTitle" style="margin: 0 0 20px; color: #555; font-size: 1.1rem;"></p>
+    <div id="pixModal" class="modal" hidden>
+      <div class="modal-content pix-card">
+        <h2 class="pix-card-title">Pagamento via Pix</h2>
+        <p id="pixMovieTitle" class="pix-movie-title"></p>
 
-    <!-- QR Code -->
-    <div style="margin: 20px 0; padding: 16px; background: #f8f8f8; border-radius: 12px;">
-      <img id="pixQrCode" src="" alt="QR Code Pix" style="width: 100%; max-width: 260px; height: auto; border-radius: 8px;">
+        <div class="pix-qr-wrap">
+          <img id="pixQrCode" src="" alt="QR Code Pix" class="pix-qr-img" />
+        </div>
+
+        <div class="pix-copy-wrap">
+          <input id="pixCopiaCola" type="text" readonly class="pix-copy-input" />
+          <button onclick="copiarPix()" class="pix-btn-copy">📋 Copiar código Pix</button>
+        </div>
+
+        <div class="pix-timer">⏳ Expira em <span id="pixTimer">15:00</span></div>
+
+        <p class="pix-hint">Pague pelo app do seu banco e o token será liberado automaticamente.</p>
+
+        <button onclick="verificarPagamentoPix()" class="pix-btn-confirm">✅ Já paguei • Verificar agora</button>
+        <button onclick="fecharPixModal()" class="pix-btn-close ghost">Fechar</button>
+      </div>
     </div>
 
-    <!-- Copia e Cola -->
-    <div style="margin-bottom: 20px;">
-      <input id="pixCopiaCola" type="text" readonly style="width: 100%; padding: 12px; font-size: 1rem; border: 2px solid #ddd; border-radius: 8px; text-align: center; background: #fafafa;">
-      <button onclick="copiarPix()" style="margin-top: 8px; padding: 10px 24px; background: #00c853; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">
-        📋 Copiar código Pix
-      </button>
-    </div>
-
-    <!-- Timer -->
-    <div style="margin: 16px 0; font-size: 1.1rem; font-weight: bold; color: #d32f2f;">
-      ⏳ Expira em <span id="pixTimer">15:00</span>
-    </div>
-
-    <p style="margin: 8px 0 20px; font-size: 0.95rem; color: #666;">
-      Pague pelo app do seu banco e o token será liberado automaticamente.
-    </p>
-
-    <!-- Botão manual -->
-    <button onclick="verificarPagamentoPix()" style="width: 100%; padding: 14px; background: #1976d2; color: white; border: none; border-radius: 8px; font-size: 1.05rem; cursor: pointer;">
-      ✅ Já paguei • Verificar agora
-    </button>
-
-    <button onclick="fecharPixModal()" style="margin-top: 12px; background: none; border: none; color: #999; font-size: 0.9rem; cursor: pointer;">
-      Fechar
-    </button>
-  </div>
-</div>
-
-<style>
-  .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 9999; }
-</style>
+    <script src="./app.js"></script>
   </body>
 </html>
