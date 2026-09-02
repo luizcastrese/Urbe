@@ -92,3 +92,51 @@ def create_bunny_video(api_key, library_id, title, collection_id=None, thumbnail
     except urllib.error.URLError as error:
         raise AppError(f"Falha de rede com Bunny.net: {error.reason}", 502, "BUNNY_CREATE_FAILED")
 
+
+def fetch_bunny_video(api_key, library_id, video_id):
+    if not api_key or not library_id or not video_id:
+        return None
+
+    req = urllib.request.Request(
+        f"{BUNNY_API_BASE}/library/{library_id}/videos/{video_id}",
+        method="GET",
+        headers={"AccessKey": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise AppError("Video nao encontrado na biblioteca Bunny. Confira o ID.", 404, "BUNNY_VIDEO_NOT_FOUND")
+        if error.code in {401, 403}:
+            return None
+        text = error.read().decode("utf-8", errors="replace")
+        raise AppError(f"Falha ao consultar Bunny.net: {text or error.code}", 502, "BUNNY_LOOKUP_FAILED")
+    except urllib.error.URLError:
+        return None
+
+
+def public_bunny_video(payload, library_id):
+    payload = payload or {}
+    video_id = str(payload.get("guid") or payload.get("videoId") or payload.get("id") or "").strip()
+    status_code = payload.get("status")
+    status_map = {
+        0: "created",
+        1: "uploaded",
+        2: "processing",
+        3: "transcoding",
+        4: "finished",
+        5: "error",
+        6: "upload_failed",
+        7: "jit_segmenting",
+        8: "jit_playlists_created",
+    }
+    return {
+        "videoId": video_id or None,
+        "libraryId": str(payload.get("videoLibraryId") or library_id or "").strip() or None,
+        "title": payload.get("title"),
+        "encodeStatus": status_map.get(status_code, payload.get("status")),
+        "readyToPlay": status_code in {4, 8} or bool(payload.get("hasMP4Fallback")),
+    }
+

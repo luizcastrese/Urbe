@@ -9,6 +9,7 @@ const state = {
   shares: [],
   transactions: [],
   orders: [],
+  bunny: null,
   view: "catalog",
   search: "",
   genre: "",
@@ -57,7 +58,11 @@ const refs = {
   pixTimer: document.querySelector("#pixTimer"),
   playerDialog: document.querySelector("#player-dialog"),
   playerFrame: document.querySelector("#player-frame"),
-  playerTitle: document.querySelector("#player-title")
+  playerTitle: document.querySelector("#player-title"),
+  playerStatus: document.querySelector("#player-status"),
+  bunnyStatusCopy: document.querySelector("#bunny-status-copy"),
+  bunnyCreateBtn: document.querySelector("#bunny-create-btn"),
+  bunnyHint: document.querySelector("#bunny-hint")
 };
 
 const actionHandlers = {
@@ -66,6 +71,7 @@ const actionHandlers = {
   "create-listing": (button) => openListingDialog(button.dataset.shareId),
   "cancel-listing": (button) => cancelListing(button.dataset.listingId),
   "consume-token": (button) => confirmWatch(button.dataset.token, button.dataset.movieTitle),
+  "resume-playback": (button) => resumeWatch(button.dataset.shareId, button.dataset.movieTitle),
   "login-to-buy": (button) => requireAuth(button.dataset.resume || "buy")
 };
 
@@ -119,15 +125,62 @@ function centsToReaisInput(cents) {
   return ((Number(cents) || 0) / 100).toFixed(2).replace(".", ",");
 }
 
-function badgeForState(shareState) {
+function tokenStory(share) {
+  const code = share.tokenState?.code;
+  const bunnyReady = share.tokenState?.bunnyReady;
+  const token = share.accessToken || share.activeToken;
+  const origin =
+    token?.reason === "resale" ? "Token emitido na revenda." : token?.reason === "primary_purchase" ? "Token emitido na compra original." : "";
+  const bunnyLine = bunnyReady
+    ? "Player Bunny pronto."
+    : "Player Bunny incompleto — este filme não tem ID de vídeo.";
+
   const map = {
-    available: { cls: "ok", label: "Disponível" },
-    reserved: { cls: "warn", label: "Reservada" },
-    owned: { cls: "ok", label: "Pronta para assistir" },
-    listed: { cls: "warn", label: "Anunciada" },
-    consumed: { cls: "fail", label: "Assistida" }
+    ready: {
+      cls: "ok",
+      label: "Pronta para assistir",
+      tokenLabel: "Token ativo",
+      detail: `1 visualização restante. ${origin} Ao abrir o player, o token é gasto.`.trim()
+    },
+    opening_player: {
+      cls: "warn",
+      label: "Abrindo player",
+      tokenLabel: "Token em uso",
+      detail: "Sessão Bunny em andamento. Se o player não abrir, o token volta a ficar ativo."
+    },
+    held_for_sale: {
+      cls: "warn",
+      label: "À venda",
+      tokenLabel: "Token em espera",
+      detail: "O token continua válido, mas assistir fica bloqueado enquanto a cota está no mercado. Se vender, este token é revogado e o comprador recebe um novo."
+    },
+    checkout_reserved: {
+      cls: "warn",
+      label: "Checkout em andamento",
+      tokenLabel: "Token reservado",
+      detail: "A cota está presa em um pagamento. Se o checkout expirar, ela volta para você."
+    },
+    used: {
+      cls: "fail",
+      label: "Assistida",
+      tokenLabel: "Token usado",
+      detail: "A visualização única já foi liberada no Bunny. Esta cota não volta ao mercado."
+    },
+    revoked: {
+      cls: "fail",
+      label: "Token revogado",
+      tokenLabel: "Revogado na revenda",
+      detail: "O token antigo morreu na transferência. O comprador recebeu um token novo."
+    },
+    missing: {
+      cls: "fail",
+      label: "Sem token",
+      tokenLabel: "Token ausente",
+      detail: "Esta cota não tem um token ativo para o player."
+    }
   };
-  return map[shareState] || { cls: "", label: shareState };
+  const story = map[code] || map[share.state] || map.missing;
+  return { ...story, bunnyLine, bunnyReady };
 }
 
 function transactionLabel(type) {
@@ -376,6 +429,7 @@ function renderMovies() {
           <small class="item-meta">${movieMetaLine(movie) || "Ficha em atualização"}</small>
           <p class="price-tag">${formatPriceFromCents(movie.priceCents)}</p>
           <small>${available} ${available === 1 ? "cota disponível" : "cotas disponíveis"} · ${movie.stats?.listed || 0} no mercado</small>
+          <small class="bunny-line">${movie.bunnyVideoId ? "Player Bunny ligado a este filme" : "Este filme ainda não tem player Bunny"}</small>
           <button data-action="${buyAction}" data-movie-id="${movie.id}" data-resume="buy" ${buyDisabled ? "disabled" : ""}>
             ${buyLabel}
           </button>
@@ -425,18 +479,23 @@ function renderShares() {
   }
   if (!state.shares.length) {
     refs.sharesGrid.innerHTML =
-      '<div class="empty-state"><strong>Você ainda não tem cotas</strong><p>Compre no catálogo ou no mercado secundário. O token chega na hora.</p></div>';
+      '<div class="empty-state"><strong>Você ainda não tem cotas</strong><p>Compre no catálogo ou no mercado secundário. O token chega na hora e só é gasto quando o player Bunny abre.</p></div>';
     return;
   }
 
   refs.sharesGrid.innerHTML = state.shares
     .map((share) => {
-      const badge = badgeForState(share.state);
+      const story = tokenStory(share);
       const token = share.activeToken?.token;
       const actions = [];
-      if (share.state === "owned" && token) {
+      if (share.tokenState?.code === "opening_player") {
         actions.push(
-          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir agora</button>`
+          `<button data-action="resume-playback" data-share-id="${share.id}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Continuar no player Bunny</button>`
+        );
+      }
+      if (share.tokenState?.code === "ready" && token) {
+        actions.push(
+          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir no Bunny</button>`
         );
         actions.push(`<button class="ghost" data-action="create-listing" data-share-id="${share.id}">Anunciar revenda</button>`);
       }
@@ -445,18 +504,17 @@ function renderShares() {
           `<button class="ghost" data-action="cancel-listing" data-listing-id="${share.activeListing.id}">Tirar do mercado</button>`
         );
       }
+      const listingLine = share.activeListing
+        ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
+        : "";
       return `
         <article class="item item-share" data-share-id="${share.id}">
           <small class="item-kicker">${escapeHtml(share.movie?.genre || "Cota")}</small>
           <strong>${escapeHtml(share.movie?.title || "Filme")}</strong>
-          <span class="badge ${badge.cls}">${badge.label}</span>
-          ${
-            share.activeListing
-              ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
-              : token
-                ? "<small>Token ativo · uma visualização</small>"
-                : "<small>Sem token ativo</small>"
-          }
+          <span class="badge ${story.cls}">${story.label}</span>
+          <small class="token-line"><strong>${story.tokenLabel}</strong> · ${escapeHtml(story.detail)}</small>
+          <small class="bunny-line">${escapeHtml(story.bunnyLine)}</small>
+          ${listingLine}
           <div class="inline">${actions.join("")}</div>
         </article>
       `;
@@ -502,7 +560,30 @@ function renderPendingBanner() {
   refs.pendingBanner.innerHTML = `<strong>Checkout em andamento.</strong> ${pending.length === 1 ? "Uma cota está reservada" : `${pending.length} cotas estão reservadas`} até o pagamento ser confirmado.`;
 }
 
-function renderAll() {
+function renderBunnyStatus() {
+  if (!refs.bunnyStatusCopy) return;
+  const bunny = state.bunny || {};
+  const libraryInput = refs.movieForm?.bunnyLibraryId;
+  if (libraryInput && bunny.defaultLibraryId && !libraryInput.value) {
+    libraryInput.value = bunny.defaultLibraryId;
+  }
+  if (refs.bunnyCreateBtn) refs.bunnyCreateBtn.hidden = !bunny.canCreate;
+  if (bunny.canCreate) {
+    refs.bunnyStatusCopy.textContent =
+      "Bunny Stream está ligado neste servidor. Crie o vídeo aqui ou cole um ID já existente. O token do espectador só é gasto quando essa sessão abre.";
+  } else if (bunny.hasLibrary) {
+    refs.bunnyStatusCopy.textContent =
+      "A biblioteca Bunny já está definida. Cole o ID do vídeo para o player funcionar.";
+  } else {
+    refs.bunnyStatusCopy.textContent =
+      "Informe biblioteca e ID do vídeo da Bunny. Sem isso, a cota até vende — mas o player não abre.";
+  }
+  if (refs.bunnyHint) {
+    refs.bunnyHint.textContent = bunny.signedEmbeds
+      ? "O embed vai assinado. O token só é marcado como usado se a sessão Bunny abrir."
+      : "O player usa o embed da Bunny. O token só é marcado como usado se a sessão abrir.";
+  }
+}
   renderSession();
   renderGenreFilter();
   renderMovies();
@@ -513,14 +594,17 @@ function renderAll() {
 }
 
 async function refreshData() {
-  const [moviesResp, listingsResp, paymentsResp] = await Promise.all([
+  const [moviesResp, listingsResp, paymentsResp, bunnyResp] = await Promise.all([
     api("/api/movies"),
     api("/api/listings"),
-    api("/api/payments/config")
+    api("/api/payments/config"),
+    api("/api/bunny/status").catch(() => ({ bunny: null }))
   ]);
   state.movies = moviesResp.movies || [];
   state.listings = listingsResp.listings || [];
   state.payments = paymentsResp.payments || null;
+  state.bunny = bunnyResp.bunny || null;
+  renderBunnyStatus();
 
   if (state.user) {
     const [sharesResp, txResp, ordersResp] = await Promise.all([
@@ -657,6 +741,33 @@ async function logout() {
   showView("catalog");
 }
 
+async function createBunnyVideo() {
+  const title = String(refs.movieForm?.title?.value || "").trim();
+  if (!title) {
+    notify("Preencha o título do filme antes de criar o vídeo na Bunny.", true);
+    return;
+  }
+  await withLoading(async () => {
+    const response = await api("/api/bunny/videos", {
+      method: "POST",
+      body: {
+        title,
+        libraryId: refs.movieForm?.bunnyLibraryId?.value || state.bunny?.defaultLibraryId
+      }
+    });
+    const videoId = response.videoId || response.bunnyVideo?.guid;
+    const libraryId = response.libraryId || state.bunny?.defaultLibraryId;
+    if (!videoId) throw new Error("A Bunny não devolveu o ID do vídeo.");
+    if (refs.movieForm?.bunnyVideoId) refs.movieForm.bunnyVideoId.value = videoId;
+    if (libraryId && refs.movieForm?.bunnyLibraryId) refs.movieForm.bunnyLibraryId.value = libraryId;
+    const ready = response.readyToPlay ? "já pode tocar" : "criado — envie o arquivo no painel da Bunny para o player ficar pronto";
+    notify(`Vídeo ${videoId} ${ready}.`);
+    if (refs.bunnyHint) {
+      refs.bunnyHint.textContent = `ID preenchido. ${ready.charAt(0).toUpperCase()}${ready.slice(1)}.`;
+    }
+  });
+}
+
 async function createMovie(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -685,8 +796,9 @@ async function createMovie(event) {
 
   await withLoading(async () => {
     await api("/api/movies", { method: "POST", body: payload });
-    notify("Filme publicado. As cotas já estão no catálogo.");
+    notify("Filme publicado. As cotas já estão no catálogo com player Bunny.");
     form.reset();
+    renderBunnyStatus();
     await refreshData();
     showView("catalog");
   });
@@ -796,9 +908,9 @@ async function cancelListing(listingId) {
 
 function confirmWatch(token, movieTitle) {
   state.confirmAction = { type: "watch", token, movieTitle };
-  refs.confirmTitle.textContent = "Assistir agora?";
-  refs.confirmCopy.textContent = `${movieTitle} usa uma visualização única. Depois de abrir o player, esta cota não poderá ser assistida de novo nem revendida.`;
-  refs.confirmAccept.textContent = "Assistir";
+  refs.confirmTitle.textContent = "Abrir o player Bunny?";
+  refs.confirmCopy.textContent = `${movieTitle} usa uma visualização única. O token só é gasto se a sessão Bunny abrir. Se o player falhar, a cota continua pronta para assistir.`;
+  refs.confirmAccept.textContent = "Abrir player";
   refs.confirmDialog.showModal();
 }
 
@@ -810,15 +922,34 @@ async function submitConfirm(event) {
   if (action?.type === "watch") await consumeToken(action.token, action.movieTitle);
 }
 
+async function openPlayer(playbackUrl, movieTitle, statusText) {
+  if (!playbackUrl) throw new Error("Não foi possível gerar o link de reprodução.");
+  refs.playerTitle.textContent = `${movieTitle} · sessão Bunny`;
+  if (refs.playerStatus) refs.playerStatus.textContent = statusText;
+  refs.playerFrame.src = playbackUrl;
+  refs.playerDialog.showModal();
+}
+
 async function consumeToken(token, movieTitle) {
   await withLoading(async () => {
     const response = await api("/api/access/consume", { method: "POST", body: { token } });
     const playbackUrl = response.playback.watchUrl || response.playback.watchPath || response.playback.embedUrl;
-    if (!playbackUrl) throw new Error("Não foi possível gerar o link de reprodução.");
-    refs.playerTitle.textContent = `${movieTitle} · visualização única`;
-    refs.playerFrame.src = playbackUrl;
-    refs.playerDialog.showModal();
-    notify("Sessão liberada. Aproveite a sessão.");
+    await openPlayer(
+      playbackUrl,
+      movieTitle,
+      "Conectando ao Bunny Stream. Se o player não abrir, seu token volta a ficar ativo."
+    );
+    notify("Sessão Bunny pedida. O token só confirma o uso depois que o player abrir.");
+    await refreshData();
+  });
+}
+
+async function resumeWatch(shareId, movieTitle) {
+  await withLoading(async () => {
+    const response = await api("/api/access/resume", { method: "POST", body: { shareId } });
+    const playbackUrl = response.playback.watchUrl || response.playback.watchPath;
+    await openPlayer(playbackUrl, movieTitle, "Retomando a sessão Bunny em andamento.");
+    notify("Retomando o player. O estado do token atualiza quando a sessão abrir.");
     await refreshData();
   });
 }
@@ -965,6 +1096,16 @@ function bindGlobalActions() {
 
   refs.playerDialog.addEventListener("close", () => {
     refs.playerFrame.src = "";
+    if (refs.playerStatus) {
+      refs.playerStatus.textContent = "Conectando ao Bunny Stream. O token só é usado se o player abrir.";
+    }
+    refreshData().catch((error) => notify(error.message, true));
+  });
+  refs.playerFrame.addEventListener("load", () => {
+    if (!refs.playerFrame.src) return;
+    if (refs.playerStatus) {
+      refs.playerStatus.textContent = "Sessão Bunny aberta. Se o vídeo aparecer, o token foi usado. Se aparecer erro, a cota continua sua.";
+    }
   });
   refs.pixDialog.addEventListener("close", () => {
     clearInterval(pixTimerInterval);
@@ -985,6 +1126,7 @@ function bindForms() {
   });
   refs.movieForm.addEventListener("submit", (event) => createMovie(event).catch((error) => notify(error.message, true)));
   refs.movieForm.querySelector('[name="priceReais"]').addEventListener("input", updatePriceHint);
+  refs.bunnyCreateBtn?.addEventListener("click", () => createBunnyVideo().catch((error) => notify(error.message, true)));
   refs.listingForm.addEventListener("submit", (event) => submitListing(event).catch((error) => notify(error.message, true)));
   refs.confirmForm.addEventListener("submit", (event) => submitConfirm(event).catch((error) => notify(error.message, true)));
   refs.pixCopyBtn.addEventListener("click", () => copiarPix());

@@ -78,7 +78,7 @@
           <div>
             <p class="eyebrow">My Position</p>
             <h1>Minhas cotas</h1>
-            <p class="page-copy">Assista agora ou anuncie a revenda. Cada visualização é única.</p>
+            <p class="page-copy">Assista no Bunny ou anuncie a revenda. O estado do token aparece em cada cota.</p>
           </div>
         </div>
         <div id="pending-banner" class="banner" hidden></div>
@@ -135,10 +135,22 @@
             </label>
           </div>
           <p class="field-hint" id="price-hint">O comprador paga esse valor por uma visualização.</p>
-          <div class="row">
-            <input name="bunnyVideoId" placeholder="bunnyVideoId" required />
-            <input name="bunnyLibraryId" placeholder="bunnyLibraryId (opcional)" />
-          </div>
+          <section class="bunny-panel" id="bunny-panel">
+            <h3>Player Bunny</h3>
+            <p class="page-copy" id="bunny-status-copy">
+              Cada cota libera uma sessão no Bunny Stream. Sem o ID do vídeo, o token não consegue abrir o player.
+            </p>
+            <button type="button" id="bunny-create-btn" class="ghost" hidden>Criar vídeo na Bunny com este título</button>
+            <label class="field">
+              <span>ID do vídeo na Bunny</span>
+              <input name="bunnyVideoId" placeholder="Cole o guid do vídeo" required />
+            </label>
+            <label class="field">
+              <span>Biblioteca Bunny</span>
+              <input name="bunnyLibraryId" placeholder="Preenchida automaticamente se já estiver no servidor" />
+            </label>
+            <p class="field-hint" id="bunny-hint">O espectador assiste neste vídeo. O token só é gasto quando a sessão Bunny abre.</p>
+          </section>
           <button type="submit">Publicar filme</button>
         </form>
       </section>
@@ -232,6 +244,7 @@
           <h3 id="player-title">Reprodução</h3>
           <button type="submit" class="ghost">Fechar</button>
         </div>
+        <p class="player-status" id="player-status">Conectando ao Bunny Stream. O token só é usado se o player abrir.</p>
         <iframe
           id="player-frame"
           title="Urbe Player"

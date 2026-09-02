@@ -7,7 +7,7 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .bunny import build_signed_embed_url, create_bunny_video
+from .bunny import build_signed_embed_url, create_bunny_video, fetch_bunny_video, public_bunny_video
 from .config import load_config
 from .errors import AppError
 from .payments import create_payment_gateway
@@ -54,15 +54,18 @@ def render_watch_error_page(message):
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 12px;
-        padding: 1rem 1.2rem;
+        padding: 1.1rem 1.2rem;
         max-width: 520px;
       }}
-      p {{ margin: 0; color: #cfd8e6; }}
+      p {{ margin: 0.35rem 0 0; color: #cfd8e6; line-height: 1.5; }}
+      strong {{ color: #ffe8bf; }}
     </style>
   </head>
   <body>
     <main>
-      <p>{{safe}}</p>
+      <strong>Player Bunny indisponivel</strong>
+      <p>{safe}</p>
+      <p>Seu token de visualizacao nao foi gasto. Feche e tente de novo.</p>
     </main>
   </body>
 </html>"""
@@ -75,9 +78,21 @@ def render_watch_page(title, embed_url):
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{safe_title}} | Urbe</title>
+    <title>{safe_title} | Urbe</title>
     <style>
-      body {{ margin: 0; background: #000; }}
+      body {{ margin: 0; background: #000; color: #f7f1e5; font-family: system-ui, sans-serif; }}
+      .watch-banner {{
+        position: absolute;
+        left: 0.8rem;
+        top: 0.8rem;
+        z-index: 2;
+        padding: 0.35rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(11, 9, 8, 0.72);
+        font-size: 0.75rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
       iframe {{
         border: 0;
         width: 100vw;
@@ -86,9 +101,10 @@ def render_watch_page(title, embed_url):
     </style>
   </head>
   <body>
+    <div class="watch-banner">Sessao unica · token usado ao abrir</div>
     <iframe
-      src="{{safe_embed}}"
-      title="{{safe_title}}"
+      src="{safe_embed}"
+      title="{safe_title}"
       allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
       allowfullscreen
     ></iframe>
@@ -156,8 +172,10 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/me/shares$"), "auth": True, "handler": "api_me_shares"},
         {"method": "GET", "pattern": re.compile(r"^/api/me/orders$"), "auth": True, "handler": "api_me_orders"},
         {"method": "GET", "pattern": re.compile(r"^/api/me/transactions$"), "auth": True, "handler": "api_me_transactions"},
-        {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
+        {"method": "GET", "pattern": re.compile(r"^/api/bunny/status$"), "auth": False, "handler": "api_bunny_status"},
         {"method": "POST", "pattern": re.compile(r"^/api/bunny/videos$"), "auth": True, "handler": "api_bunny_create_video"},
+        {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
+        {"method": "POST", "pattern": re.compile(r"^/api/access/resume$"), "auth": True, "handler": "api_access_resume"},
         # === NOVA ROTA DO WEBHOOK OPENPIX ===
         {
             "method": "POST",
@@ -434,7 +452,13 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return 200, {"movie": SERVICE.get_movie(movie_id)}, {}
 
     def api_movies_create(self, ctx):
-        movie = SERVICE.create_movie(ctx["user"]["id"], ctx["body"])
+        body = dict(ctx["body"] or {})
+        if CONFIG.bunny.api_key:
+            video_id = str(body.get("bunnyVideoId") or "").strip()
+            library_id = str(body.get("bunnyLibraryId") or CONFIG.bunny.default_library_id or "").strip()
+            if video_id and library_id:
+                fetch_bunny_video(CONFIG.bunny.api_key, library_id, video_id)
+        movie = SERVICE.create_movie(ctx["user"]["id"], body)
         return 201, {"movie": movie}, {}
 
     def api_movies_buy(self, ctx, movie_id):
@@ -486,11 +510,21 @@ class UrbeHandler(BaseHTTPRequestHandler):
 
     def api_access_consume(self, ctx):
         payload = SERVICE.consume_access_token(ctx["user"]["id"], str(ctx["body"].get("token") or ""))
+        return 200, payload, self._playback_headers(payload)
+
+    def api_access_resume(self, ctx):
+        payload = SERVICE.resume_playback(
+            ctx["user"]["id"],
+            token_value=str(ctx["body"].get("token") or ""),
+            share_id=str(ctx["body"].get("shareId") or ""),
+        )
+        return 200, payload, self._playback_headers(payload)
+
+    def _playback_headers(self, payload):
         playback = payload.get("playback") or {}
         playback_secret = playback.get("clientSecret", "")
         if "clientSecret" in playback:
             del playback["clientSecret"]
-
         headers = {"Cache-Control": "no-store"}
         if playback_secret:
             headers["Set-Cookie"] = build_cookie(
@@ -501,18 +535,22 @@ class UrbeHandler(BaseHTTPRequestHandler):
                 same_site="Strict",
                 http_only=True,
             )
+        return headers
 
-        return 200, payload, headers
+    def api_bunny_status(self, _ctx):
+        return 200, {"bunny": SERVICE.get_bunny_status()}, {}
 
     def api_bunny_create_video(self, ctx):
+        library_id = str(ctx["body"].get("libraryId") or CONFIG.bunny.default_library_id or "")
         bunny_video = create_bunny_video(
             api_key=CONFIG.bunny.api_key,
-            library_id=str(ctx["body"].get("libraryId") or CONFIG.bunny.default_library_id or ""),
+            library_id=library_id,
             title=ctx["body"].get("title"),
             collection_id=ctx["body"].get("collectionId"),
             thumbnail_time=ctx["body"].get("thumbnailTime"),
         )
-        return 201, {"bunnyVideo": bunny_video}, {}
+        public_video = public_bunny_video(bunny_video, library_id)
+        return 201, {"bunnyVideo": bunny_video, **public_video}, {}
 
 
 def run():

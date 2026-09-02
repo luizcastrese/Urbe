@@ -124,6 +124,39 @@ class ServiceTestCase(unittest.TestCase):
         with self.assertRaises(AppError):
             self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
 
+    def test_falha_no_player_nao_gasta_token(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Bunny", "email": "bunny-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        viewer = self.service.register_user(
+            {"name": "Cliente Bunny", "email": "bunny-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Bunny", bunny_video_id="video-guid-bunny")
+        purchase = self.service.buy_primary_share(viewer["id"], movie["id"])
+        consumed = self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
+
+        mid = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(mid["state"], "owned")
+        self.assertEqual(mid["accessToken"]["status"], "redeeming")
+        self.assertEqual(mid["tokenState"]["code"], "opening_player")
+
+        with self.assertRaises(AppError):
+            self.service.open_playback_session(
+                consumed["playback"]["watchToken"],
+                {
+                    "clientSecret": consumed["playback"]["clientSecret"],
+                    "ipAddress": "127.0.0.1",
+                    "userAgent": "test",
+                },
+                lambda _info: (_ for _ in ()).throw(AppError("Filme sem identificadores Bunny validos.", 400, "INVALID_BUNNY_IDENTIFIERS")),
+            )
+
+        restored = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(restored["state"], "owned")
+        self.assertEqual(restored["accessToken"]["status"], "active")
+        self.assertEqual(restored["tokenState"]["code"], "ready")
+        self.assertTrue(restored["tokenState"]["bunnyReady"])
+
     def test_checkout_primario_mock_finaliza_compra(self):
         producer = self.service.register_user(
             {"name": "Produtora", "email": "produtora@urbe.test", "password": "123456"}

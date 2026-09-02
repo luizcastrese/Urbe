@@ -1070,9 +1070,36 @@ dialog,
   color: #f6d9a2;
 }
 
-.field-hint {
+.token-line,
+.bunny-line {
+  display: block;
+}
+
+.token-line strong {
+  color: #ffe8c0;
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: none;
+}
+
+.bunny-panel {
+  display: grid;
+  gap: 0.7rem;
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px solid rgba(109, 195, 251, 0.28);
+  background: rgba(109, 195, 251, 0.08);
+}
+
+.bunny-panel h3 {
+  margin: 0;
+  color: #d7eefc;
+}
+
+.player-status {
   margin: 0;
   color: var(--muted);
+  font-size: 0.82rem;
 }
 
 .ledger {
