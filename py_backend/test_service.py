@@ -156,7 +156,162 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(restored["accessToken"]["status"], "active")
         self.assertEqual(restored["tokenState"]["code"], "ready")
         self.assertTrue(restored["tokenState"]["bunnyReady"])
+        self.assertTrue(restored["tokenState"]["canWatch"])
+        self.assertEqual(restored["tokenState"]["remainingViews"], 1)
+        self.assertEqual(restored["tokenState"]["label"], "Pronta para assistir")
 
+    def test_sessao_expirada_restaura_token(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Expira", "email": "expira-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        viewer = self.service.register_user(
+            {"name": "Cliente Expira", "email": "expira-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Expira", bunny_video_id="video-guid-expira")
+        purchase = self.service.buy_primary_share(viewer["id"], movie["id"])
+        consumed = self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
+
+        def expire_session(db):
+            for session in db["playbackSessions"]:
+                if session["token"] == consumed["playback"]["watchToken"]:
+                    session["expiresAt"] = "2000-01-01T00:00:00Z"
+            return None
+
+        self.service.store.transaction(expire_session)
+
+        with self.assertRaises(AppError) as error:
+            self.service.open_playback_session(
+                consumed["playback"]["watchToken"],
+                {
+                    "clientSecret": consumed["playback"]["clientSecret"],
+                    "ipAddress": "127.0.0.1",
+                    "userAgent": "test",
+                },
+                lambda info: {"embedUrl": "https://example.com", "expiresAt": "2099-01-01T00:00:00Z", "signed": False},
+            )
+        self.assertEqual(error.exception.code, "PLAYBACK_EXPIRED")
+
+        restored = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(restored["state"], "owned")
+        self.assertEqual(restored["accessToken"]["status"], "active")
+        self.assertEqual(restored["tokenState"]["code"], "ready")
+        self.assertTrue(restored["tokenState"]["canWatch"])
+
+    def test_filme_sem_bunny_nao_gasta_token(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Sem Player", "email": "sem-player-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        viewer = self.service.register_user(
+            {"name": "Cliente Sem Player", "email": "sem-player-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Sem Player", bunny_video_id="video-guid-sem")
+        purchase = self.service.buy_primary_share(viewer["id"], movie["id"])
+
+        def strip_bunny(db):
+            for item in db["movies"]:
+                if item["id"] == movie["id"]:
+                    item["bunnyVideoId"] = ""
+                    item["bunnyLibraryId"] = ""
+            return None
+
+        self.service.store.transaction(strip_bunny)
+
+        with self.assertRaises(AppError) as error:
+            self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
+        self.assertEqual(error.exception.code, "BUNNY_NOT_READY")
+
+        share = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(share["accessToken"]["status"], "active")
+        self.assertEqual(share["tokenState"]["code"], "ready")
+        self.assertFalse(share["tokenState"]["canWatch"])
+        self.assertFalse(share["tokenState"]["bunnyReady"])
+
+    def test_lookup_bunny_falha_restaura_token(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Lookup", "email": "lookup-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        viewer = self.service.register_user(
+            {"name": "Cliente Lookup", "email": "lookup-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Lookup", bunny_video_id="video-guid-lookup")
+        purchase = self.service.buy_primary_share(viewer["id"], movie["id"])
+        consumed = self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
+
+        def fail_lookup(_library_id, _video_id):
+            raise AppError("Video nao encontrado na biblioteca Bunny. Confira o ID.", 404, "BUNNY_VIDEO_NOT_FOUND")
+
+        with self.assertRaises(AppError) as error:
+            self.service.open_playback_session(
+                consumed["playback"]["watchToken"],
+                {
+                    "clientSecret": consumed["playback"]["clientSecret"],
+                    "ipAddress": "127.0.0.1",
+                    "userAgent": "test",
+                },
+                lambda info: {
+                    "embedUrl": f"https://iframe.mediadelivery.net/embed/{info['libraryId']}/{info['videoId']}",
+                    "expiresAt": "2099-01-01T00:00:00Z",
+                    "signed": False,
+                },
+                bunny_lookup=fail_lookup,
+            )
+        self.assertEqual(error.exception.code, "BUNNY_VIDEO_NOT_FOUND")
+
+        restored = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(restored["accessToken"]["status"], "active")
+        self.assertEqual(restored["tokenState"]["code"], "ready")
+
+    def test_confirm_order_payment_por_correlation(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Webhook", "email": "webhook-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        buyer = self.service.register_user(
+            {"name": "Comprador Webhook", "email": "webhook-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Webhook", bunny_video_id="video-guid-webhook")
+
+        class DelayedGateway:
+            provider = "mock"
+
+            def create_checkout_session(self, order, description, buyer, success_url, cancel_url):
+                return {
+                    "provider": "mock",
+                    "sessionId": f"sess_{order['id']}",
+                    "checkoutUrl": "https://checkout.mock/session",
+                    "paid": False,
+                    "amountCents": order["amountCents"],
+                    "currency": order["currency"],
+                    "paymentStatus": "unpaid",
+                    "status": "open",
+                    "raw": {"mode": "delayed"},
+                }
+
+            def get_checkout_session_status(self, session_id, expected_order):
+                return {
+                    "provider": "mock",
+                    "sessionId": session_id,
+                    "paid": False,
+                    "amountCents": expected_order["amountCents"],
+                    "currency": expected_order["currency"],
+                    "paymentStatus": "unpaid",
+                    "status": "open",
+                    "raw": {"mode": "delayed"},
+                }
+
+        pending = self.service.start_primary_checkout(buyer["id"], movie["id"], DelayedGateway())
+        self.assertEqual(pending["order"]["status"], "pending")
+
+        confirmed = self.service.confirm_order_payment(pending["order"]["id"])
+        self.assertFalse(confirmed["alreadyPaid"])
+        self.assertEqual(confirmed["order"]["status"], "paid")
+        self.assertEqual(confirmed["purchase"]["token"]["status"], "active")
+
+        share = self.service.get_user_shares(buyer["id"])[0]
+        self.assertEqual(share["tokenState"]["code"], "ready")
+        self.assertTrue(share["tokenState"]["canWatch"])
+
+        again = self.service.confirm_order_payment(pending["order"]["id"])
+        self.assertTrue(again["alreadyPaid"])
     def test_checkout_primario_mock_finaliza_compra(self):
         producer = self.service.register_user(
             {"name": "Produtora", "email": "produtora@urbe.test", "password": "123456"}

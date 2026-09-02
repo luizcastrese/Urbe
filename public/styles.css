@@ -1082,6 +1082,74 @@ dialog,
   text-transform: none;
 }
 
+.token-status {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.7rem 0.75rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.token-status-ok {
+  border-color: rgba(126, 228, 191, 0.28);
+  background: rgba(126, 228, 191, 0.08);
+}
+
+.token-status-warn {
+  border-color: rgba(245, 207, 143, 0.32);
+  background: rgba(245, 207, 143, 0.08);
+}
+
+.token-status-fail {
+  border-color: rgba(240, 142, 142, 0.28);
+  background: rgba(240, 142, 142, 0.08);
+}
+
+.token-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.token-steps li {
+  position: relative;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.token-steps li.is-done {
+  color: #d6fbe9;
+  background: rgba(126, 228, 191, 0.16);
+}
+
+.token-steps li.is-current {
+  color: #ffe9bf;
+  background: rgba(245, 207, 143, 0.2);
+}
+
+.token-steps li.is-blocked {
+  color: #ffd6d6;
+  background: rgba(240, 142, 142, 0.16);
+  text-decoration: line-through;
+}
+
+.token-block,
+.token-countdown {
+  display: block;
+  color: #ffe9bf;
+}
+
+.banner .ghost {
+  margin-top: 0.45rem;
+}
+
 .bunny-panel {
   display: grid;
   gap: 0.7rem;

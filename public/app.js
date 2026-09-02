@@ -70,7 +70,7 @@ const actionHandlers = {
   "buy-listing": (button) => requestListingPurchase(button.dataset.listingId),
   "create-listing": (button) => openListingDialog(button.dataset.shareId),
   "cancel-listing": (button) => cancelListing(button.dataset.listingId),
-  "consume-token": (button) => confirmWatch(button.dataset.token, button.dataset.movieTitle),
+  "consume-token": (button) => confirmWatch(button.dataset.token, button.dataset.movieTitle, button.dataset.shareId),
   "resume-playback": (button) => resumeWatch(button.dataset.shareId, button.dataset.movieTitle),
   "login-to-buy": (button) => requireAuth(button.dataset.resume || "buy")
 };
@@ -79,6 +79,8 @@ let pixOrderId = "";
 let pixSessionId = "";
 let pixTimerInterval = null;
 let pixPollInterval = null;
+let playbackPollInterval = null;
+let playbackShareId = "";
 
 function pixImageSrc(raw) {
   const value = String(raw || "").trim();
@@ -125,15 +127,23 @@ function centsToReaisInput(cents) {
   return ((Number(cents) || 0) / 100).toFixed(2).replace(".", ",");
 }
 
+function formatCountdown(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  const min = Math.floor(value / 60);
+  const sec = value % 60;
+  return `${min}:${sec.toString().padStart(2, "0")}`;
+}
+
 function tokenStory(share) {
-  const code = share.tokenState?.code;
-  const bunnyReady = share.tokenState?.bunnyReady;
+  const ts = share.tokenState || {};
+  const code = ts.code;
+  const bunnyReady = Boolean(ts.bunnyReady);
   const token = share.accessToken || share.activeToken;
   const origin =
     token?.reason === "resale" ? "Token emitido na revenda." : token?.reason === "primary_purchase" ? "Token emitido na compra original." : "";
   const bunnyLine = bunnyReady
-    ? "Player Bunny pronto."
-    : "Player Bunny incompleto — este filme não tem ID de vídeo.";
+    ? "Player Bunny pronto para esta cota."
+    : "Player Bunny incompleto — sem ID de vídeo o token não abre.";
 
   const map = {
     ready: {
@@ -180,7 +190,30 @@ function tokenStory(share) {
     }
   };
   const story = map[code] || map[share.state] || map.missing;
-  return { ...story, bunnyLine, bunnyReady };
+  const remainingViews = Number.isFinite(ts.remainingViews) ? ts.remainingViews : code === "used" || code === "revoked" || code === "missing" ? 0 : 1;
+  return {
+    ...story,
+    cls: map[code]?.cls || story.cls,
+    label: ts.label || story.label,
+    tokenLabel: ts.tokenLabel || story.tokenLabel,
+    detail: ts.detail || story.detail,
+    bunnyLine,
+    bunnyReady,
+    canWatch: ts.canWatch ?? (code === "ready" && bunnyReady && Boolean(share.activeToken?.token || token?.token)),
+    canResume: ts.canResume ?? code === "opening_player",
+    canList: ts.canList ?? code === "ready",
+    steps: Array.isArray(ts.steps) ? ts.steps : [],
+    remainingViews,
+    playbackRemainingSeconds: ts.playbackRemainingSeconds || share.pendingPlayback?.remainingSeconds || 0,
+    code
+  };
+}
+
+function tokenStepsHtml(steps) {
+  if (!steps.length) return "";
+  return `<ol class="token-steps">${steps
+    .map((step) => `<li class="is-${escapeHtml(step.state || "todo")}">${escapeHtml(step.label)}</li>`)
+    .join("")}</ol>`;
 }
 
 function transactionLabel(type) {
@@ -486,17 +519,21 @@ function renderShares() {
   refs.sharesGrid.innerHTML = state.shares
     .map((share) => {
       const story = tokenStory(share);
-      const token = share.activeToken?.token;
+      const token = share.activeToken?.token || (share.tokenState?.code === "ready" ? share.accessToken?.token : "");
       const actions = [];
-      if (share.tokenState?.code === "opening_player") {
+      if (story.canResume) {
         actions.push(
           `<button data-action="resume-playback" data-share-id="${share.id}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Continuar no player Bunny</button>`
         );
       }
-      if (share.tokenState?.code === "ready" && token) {
+      if (story.canWatch && token) {
         actions.push(
-          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir no Bunny</button>`
+          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-share-id="${share.id}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir no Bunny</button>`
         );
+      } else if (share.tokenState?.code === "ready" && !story.bunnyReady) {
+        actions.push(`<small class="token-block">Assistir bloqueado até o filme ter ID Bunny. O token permanece ativo.</small>`);
+      }
+      if (story.canList) {
         actions.push(`<button class="ghost" data-action="create-listing" data-share-id="${share.id}">Anunciar revenda</button>`);
       }
       if (share.state === "listed" && share.activeListing?.id && share.activeListing.status !== "reserved") {
@@ -507,13 +544,28 @@ function renderShares() {
       const listingLine = share.activeListing
         ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
         : "";
+      const viewsLine =
+        story.remainingViews === 1
+          ? "1 visualização restante"
+          : story.remainingViews === 0
+            ? "Nenhuma visualização restante"
+            : "";
+      const countdown =
+        story.canResume && story.playbackRemainingSeconds
+          ? `<small class="token-countdown">Sessão expira em ${formatCountdown(story.playbackRemainingSeconds)}</small>`
+          : "";
       return `
         <article class="item item-share" data-share-id="${share.id}">
           <small class="item-kicker">${escapeHtml(share.movie?.genre || "Cota")}</small>
           <strong>${escapeHtml(share.movie?.title || "Filme")}</strong>
-          <span class="badge ${story.cls}">${story.label}</span>
-          <small class="token-line"><strong>${story.tokenLabel}</strong> · ${escapeHtml(story.detail)}</small>
-          <small class="bunny-line">${escapeHtml(story.bunnyLine)}</small>
+          <div class="token-status token-status-${story.cls}">
+            <span class="badge ${story.cls}">${escapeHtml(story.label)}</span>
+            <small class="token-line"><strong>${escapeHtml(story.tokenLabel)}</strong> · ${escapeHtml(viewsLine || story.detail)}</small>
+            <small class="token-line">${escapeHtml(story.detail)}</small>
+            <small class="bunny-line">${escapeHtml(story.bunnyLine)}</small>
+            ${tokenStepsHtml(story.steps)}
+            ${countdown}
+          </div>
           ${listingLine}
           <div class="inline">${actions.join("")}</div>
         </article>
@@ -551,13 +603,26 @@ function renderTransactions() {
 
 function renderPendingBanner() {
   const pending = (state.orders || []).filter((order) => order.status === "pending");
-  if (!pending.length) {
+  const opening = (state.shares || []).filter((share) => share.tokenState?.code === "opening_player");
+  if (!pending.length && !opening.length) {
     refs.pendingBanner.hidden = true;
     refs.pendingBanner.innerHTML = "";
     return;
   }
   refs.pendingBanner.hidden = false;
-  refs.pendingBanner.innerHTML = `<strong>Checkout em andamento.</strong> ${pending.length === 1 ? "Uma cota está reservada" : `${pending.length} cotas estão reservadas`} até o pagamento ser confirmado.`;
+  const parts = [];
+  if (opening.length) {
+    const first = opening[0];
+    parts.push(
+      `<strong>Sessão Bunny em andamento.</strong> O token de ${escapeHtml(first.movie?.title || "um filme")} está em uso. Se o player não abrir, ele volta a ficar ativo. <button type="button" class="ghost" data-action="resume-playback" data-share-id="${first.id}" data-movie-title="${escapeHtml(first.movie?.title || "Filme")}">Continuar no player</button>`
+    );
+  }
+  if (pending.length) {
+    parts.push(
+      `<strong>Checkout em andamento.</strong> ${pending.length === 1 ? "Uma cota está reservada" : `${pending.length} cotas estão reservadas`} até o pagamento ser confirmado.`
+    );
+  }
+  refs.pendingBanner.innerHTML = parts.join("");
 }
 
 function renderBunnyStatus() {
@@ -908,8 +973,8 @@ async function cancelListing(listingId) {
   });
 }
 
-function confirmWatch(token, movieTitle) {
-  state.confirmAction = { type: "watch", token, movieTitle };
+function confirmWatch(token, movieTitle, shareId) {
+  state.confirmAction = { type: "watch", token, movieTitle, shareId };
   refs.confirmTitle.textContent = "Abrir o player Bunny?";
   refs.confirmCopy.textContent = `${movieTitle} usa uma visualização única. O token só é gasto se a sessão Bunny abrir. Se o player falhar, a cota continua pronta para assistir.`;
   refs.confirmAccept.textContent = "Abrir player";
@@ -921,25 +986,78 @@ async function submitConfirm(event) {
   refs.confirmDialog.close();
   const action = state.confirmAction;
   state.confirmAction = null;
-  if (action?.type === "watch") await consumeToken(action.token, action.movieTitle);
+  if (action?.type === "watch") await consumeToken(action.token, action.movieTitle, action.shareId);
 }
 
-async function openPlayer(playbackUrl, movieTitle, statusText) {
+async function openPlayer(playbackUrl, movieTitle, statusText, shareId) {
   if (!playbackUrl) throw new Error("Não foi possível gerar o link de reprodução.");
   refs.playerTitle.textContent = `${movieTitle} · sessão Bunny`;
   if (refs.playerStatus) refs.playerStatus.textContent = statusText;
+  playbackShareId = shareId || "";
   refs.playerFrame.src = playbackUrl;
   refs.playerDialog.showModal();
+  if (playbackShareId) startPlaybackPoll(playbackShareId);
 }
 
-async function consumeToken(token, movieTitle) {
+function stopPlaybackPoll() {
+  if (playbackPollInterval) clearInterval(playbackPollInterval);
+  playbackPollInterval = null;
+}
+
+function startPlaybackPoll(shareId) {
+  playbackShareId = shareId;
+  stopPlaybackPoll();
+  playbackPollInterval = setInterval(() => {
+    syncPlaybackState().catch(() => {});
+  }, 2000);
+}
+
+async function syncPlaybackState() {
+  if (!state.user) return;
+  const sharesResp = await api("/api/me/shares");
+  state.shares = sharesResp.shares || [];
+  const share = playbackShareId ? state.shares.find((item) => item.id === playbackShareId) : null;
+  if (share && refs.playerStatus) {
+    const story = tokenStory(share);
+    if (story.code === "used" || share.tokenState?.code === "used") {
+      refs.playerStatus.textContent = "Sessão Bunny aberta. Token usado — esta visualização não se repete.";
+      stopPlaybackPoll();
+    } else if (share.tokenState?.code === "ready") {
+      refs.playerStatus.textContent = "O player não confirmou a sessão. Seu token voltou a ficar ativo.";
+      stopPlaybackPoll();
+    } else if (share.tokenState?.code === "opening_player") {
+      const left = story.playbackRemainingSeconds ? ` Expira em ${formatCountdown(story.playbackRemainingSeconds)}.` : "";
+      refs.playerStatus.textContent = `Conectando ao Bunny Stream. Token em uso.${left}`;
+    }
+  }
+  renderShares();
+  renderPendingBanner();
+}
+
+function applyWatchMessage(data) {
+  if (!refs.playerStatus) return;
+  if (data.tokenSpent) {
+    refs.playerStatus.textContent = "Sessão Bunny aberta. Token usado — esta visualização não se repete.";
+    stopPlaybackPoll();
+  } else if (data.code === "PLAYBACK_FORBIDDEN") {
+    refs.playerStatus.textContent = "Abra pelo mesmo navegador. O token continua em sessão — use Continuar no player.";
+  } else {
+    refs.playerStatus.textContent = data.message
+      ? `${data.message}`
+      : "Player não abriu. Seu token não foi gasto.";
+  }
+  refreshData().catch((error) => notify(error.message, true));
+}
+
+async function consumeToken(token, movieTitle, shareId) {
   await withLoading(async () => {
     const response = await api("/api/access/consume", { method: "POST", body: { token } });
     const playbackUrl = response.playback.watchUrl || response.playback.watchPath || response.playback.embedUrl;
     await openPlayer(
       playbackUrl,
       movieTitle,
-      "Conectando ao Bunny Stream. Se o player não abrir, seu token volta a ficar ativo."
+      "Conectando ao Bunny Stream. Se o player não abrir, seu token volta a ficar ativo.",
+      response.share?.id || shareId
     );
     notify("Sessão Bunny pedida. O token só confirma o uso depois que o player abrir.");
     await refreshData();
@@ -950,7 +1068,7 @@ async function resumeWatch(shareId, movieTitle) {
   await withLoading(async () => {
     const response = await api("/api/access/resume", { method: "POST", body: { shareId } });
     const playbackUrl = response.playback.watchUrl || response.playback.watchPath;
-    await openPlayer(playbackUrl, movieTitle, "Retomando a sessão Bunny em andamento.");
+    await openPlayer(playbackUrl, movieTitle, "Retomando a sessão Bunny em andamento.", response.share?.id || shareId);
     notify("Retomando o player. O estado do token atualiza quando a sessão abrir.");
     await refreshData();
   });
@@ -1098,6 +1216,8 @@ function bindGlobalActions() {
 
   refs.playerDialog.addEventListener("close", () => {
     refs.playerFrame.src = "";
+    stopPlaybackPoll();
+    playbackShareId = "";
     if (refs.playerStatus) {
       refs.playerStatus.textContent = "Conectando ao Bunny Stream. O token só é usado se o player abrir.";
     }
@@ -1105,9 +1225,13 @@ function bindGlobalActions() {
   });
   refs.playerFrame.addEventListener("load", () => {
     if (!refs.playerFrame.src) return;
-    if (refs.playerStatus) {
-      refs.playerStatus.textContent = "Sessão Bunny aberta. Se o vídeo aparecer, o token foi usado. Se aparecer erro, a cota continua sua.";
-    }
+    syncPlaybackState().catch(() => {});
+  });
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (!data || data.source !== "urbe-watch") return;
+    applyWatchMessage(data);
   });
   refs.pixDialog.addEventListener("close", () => {
     clearInterval(pixTimerInterval);

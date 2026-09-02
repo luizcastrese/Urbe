@@ -7,7 +7,13 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .bunny import build_signed_embed_url, create_bunny_video, fetch_bunny_video, public_bunny_video
+from .bunny import (
+    build_signed_embed_url,
+    create_bunny_video,
+    fetch_bunny_video,
+    lookup_bunny_video,
+    public_bunny_video,
+)
 from .config import load_config
 from .errors import AppError
 from .payments import create_payment_gateway
@@ -24,6 +30,10 @@ STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore
 SERVICE = UrbeService(STORE, CONFIG)
 PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
 
+
+def lookup_configured_bunny_video(library_id, video_id):
+    return lookup_bunny_video(CONFIG.bunny.api_key, library_id, video_id)
+
 def get_cors_headers():
     return {
         "Access-Control-Allow-Origin": "*",
@@ -32,8 +42,52 @@ def get_cors_headers():
         "Access-Control-Max-Age": "86400",
     }
 
-def render_watch_error_page(message):
+def watch_token_copy(code):
+    if code == "PLAYBACK_USED":
+        return "Esta visualizacao unica ja foi usada. O token esta gasto."
+    if code == "PLAYBACK_FORBIDDEN":
+        return "O token continua em sessao neste navegador. Volte para Minhas cotas e toque em Continuar."
+    if code in {
+        "PLAYBACK_EXPIRED",
+        "BUNNY_EMBED_FAILED",
+        "INVALID_BUNNY_IDENTIFIERS",
+        "BUNNY_VIDEO_NOT_FOUND",
+        "BUNNY_NOT_READY",
+        "BUNNY_LOOKUP_FAILED",
+    }:
+        return "Seu token de visualizacao nao foi gasto. A cota continua pronta para assistir."
+    return "Se a sessao Bunny nao chegou a abrir, o token nao foi gasto."
+
+
+def watch_post_message_script(payload):
+    raw = json.dumps(payload, ensure_ascii=True)
+    return f"""
+    <script>
+      (function () {{
+        var payload = {raw};
+        try {{
+          if (window.parent && window.parent !== window) {{
+            window.parent.postMessage(payload, window.location.origin);
+          }}
+        }} catch (error) {{}}
+      }})();
+    </script>
+    """
+
+
+def render_watch_error_page(message, code=""):
     safe = html.escape(str(message or "Falha ao abrir reproducao."))
+    token_line = html.escape(watch_token_copy(code))
+    token_spent = code == "PLAYBACK_USED"
+    script = watch_post_message_script(
+        {
+            "source": "urbe-watch",
+            "ok": False,
+            "tokenSpent": token_spent,
+            "code": code or "",
+            "message": str(message or ""),
+        }
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
   <head>
@@ -65,14 +119,24 @@ def render_watch_error_page(message):
     <main>
       <strong>Player Bunny indisponivel</strong>
       <p>{safe}</p>
-      <p>Seu token de visualizacao nao foi gasto. Feche e tente de novo.</p>
+      <p>{token_line}</p>
     </main>
+    {script}
   </body>
 </html>"""
 
 def render_watch_page(title, embed_url):
     safe_title = html.escape(str(title or "Urbe"))
     safe_embed = html.escape(str(embed_url or ""))
+    script = watch_post_message_script(
+        {
+            "source": "urbe-watch",
+            "ok": True,
+            "tokenSpent": True,
+            "code": "PLAYBACK_OPEN",
+            "message": "Sessao Bunny aberta. Token usado.",
+        }
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
   <head>
@@ -108,6 +172,7 @@ def render_watch_page(title, embed_url):
       allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
       allowfullscreen
     ></iframe>
+    {script}
   </body>
 </html>"""
 
@@ -300,7 +365,11 @@ class UrbeHandler(BaseHTTPRequestHandler):
         clear_cookie = build_cookie("urbe_playback", "", path="/watch", max_age=0, same_site="Strict", http_only=True)
 
         if not match:
-            self._send_html(404, render_watch_error_page("Link de reproducao invalido."), {"Set-Cookie": clear_cookie})
+            self._send_html(
+                404,
+                render_watch_error_page("Link de reproducao invalido.", "PLAYBACK_NOT_FOUND"),
+                {"Set-Cookie": clear_cookie},
+            )
             return
 
         playback_token = match.group(1)
@@ -323,6 +392,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
                     expires_in_seconds=90,
                     session_tag=info.get("sessionTag", ""),
                 ),
+                bunny_lookup=lookup_configured_bunny_video,
             )
             page = render_watch_page(result["movie"]["title"], result["playback"]["embedUrl"])
             self._send_html(
@@ -337,7 +407,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         except AppError as error:
             self._send_html(
                 error.status,
-                render_watch_error_page(error.message),
+                render_watch_error_page(error.message, error.code),
                 {
                     "Cache-Control": "no-store",
                     "Set-Cookie": clear_cookie,
@@ -348,7 +418,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
             print("Unhandled watch error:", error)
             self._send_html(
                 500,
-                render_watch_error_page("Falha ao abrir reproducao."),
+                render_watch_error_page("Falha ao abrir reproducao.", "INTERNAL_ERROR"),
                 {
                     "Cache-Control": "no-store",
                     "Set-Cookie": clear_cookie,
@@ -509,7 +579,11 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return 200, {"transactions": SERVICE.get_user_transactions(ctx["user"]["id"])}, {}
 
     def api_access_consume(self, ctx):
-        payload = SERVICE.consume_access_token(ctx["user"]["id"], str(ctx["body"].get("token") or ""))
+        payload = SERVICE.consume_access_token(
+            ctx["user"]["id"],
+            str(ctx["body"].get("token") or ""),
+            bunny_lookup=lookup_configured_bunny_video,
+        )
         return 200, payload, self._playback_headers(payload)
 
     def api_access_resume(self, ctx):

@@ -93,6 +93,22 @@ def create_bunny_video(api_key, library_id, title, collection_id=None, thumbnail
         raise AppError(f"Falha de rede com Bunny.net: {error.reason}", 502, "BUNNY_CREATE_FAILED")
 
 
+def assert_bunny_identifiers(library_id, video_id):
+    if not library_id or not video_id:
+        raise AppError(
+            "Filme sem identificadores Bunny validos. O token nao foi gasto.",
+            400,
+            "INVALID_BUNNY_IDENTIFIERS",
+        )
+
+
+def lookup_bunny_video(api_key, library_id, video_id):
+    assert_bunny_identifiers(library_id, video_id)
+    if not api_key:
+        return None
+    return fetch_bunny_video(api_key, library_id, video_id)
+
+
 def fetch_bunny_video(api_key, library_id, video_id):
     if not api_key or not library_id or not video_id:
         return None
