@@ -136,20 +136,23 @@
           </div>
           <p class="field-hint" id="price-hint">O comprador paga esse valor por uma visualização.</p>
           <section class="bunny-panel" id="bunny-panel">
-            <h3>Player Bunny</h3>
+            <div class="bunny-panel-head">
+              <h3>Player Bunny</h3>
+              <button type="button" class="ghost" id="bunny-guide-btn">Ver exemplo na tela</button>
+            </div>
             <p class="page-copy" id="bunny-status-copy">
               Cada cota libera uma sessão no Bunny Stream. Sem o ID do vídeo, o token não consegue abrir o player.
             </p>
             <button type="button" id="bunny-create-btn" class="ghost" hidden>Criar vídeo na Bunny com este título</button>
             <label class="field">
               <span>ID do vídeo na Bunny</span>
-              <input name="bunnyVideoId" placeholder="Cole o guid do vídeo" required />
+              <input name="bunnyVideoId" placeholder="Cole o guid ou a URL de embed" required autocomplete="off" />
             </label>
             <label class="field">
               <span>Biblioteca Bunny</span>
-              <input name="bunnyLibraryId" placeholder="Preenchida automaticamente se já estiver no servidor" />
+              <input name="bunnyLibraryId" placeholder="Preenchida automaticamente se já estiver no servidor" autocomplete="off" />
             </label>
-            <p class="field-hint" id="bunny-hint">O espectador assiste neste vídeo. O token só é gasto quando a sessão Bunny abre.</p>
+            <p class="field-hint" id="bunny-hint">O espectador assiste neste vídeo. O token só é gasto quando a sessão Bunny abre. Se tiver o embed, cole a URL no ID — separamos biblioteca e guid.</p>
           </section>
           <button type="submit">Publicar filme</button>
         </form>
@@ -236,6 +239,105 @@
         <p class="page-copy">Pague no app do banco. Detectamos o pagamento automaticamente.</p>
         <button type="button" id="pix-check-btn">Já paguei · verificar agora</button>
       </form>
+    </dialog>
+
+    <dialog id="bunny-guide-dialog" class="app-dialog bunny-guide-dialog">
+      <div class="dialog-shell bunny-guide-shell">
+        <div class="player-head">
+          <h3>Da Bunny ao anúncio</h3>
+          <button type="button" class="ghost dialog-close">Fechar</button>
+        </div>
+        <p class="page-copy" id="bunny-guide-caption">Exemplo do painel da Bunny e de onde colar os IDs neste anúncio. Não substitui a sua conta — só mostra o caminho.</p>
+        <div class="demo-screen" id="bunny-guide-stage" data-step="1" aria-live="polite">
+          <div class="demo-chrome">
+            <span class="demo-dot"></span><span class="demo-dot"></span><span class="demo-dot"></span>
+            <span class="demo-url" id="bunny-guide-url">dash.bunny.net/stream</span>
+          </div>
+          <div class="demo-stage">
+            <article class="demo-scene" data-scene="1">
+              <aside class="demo-side">
+                <strong>bunny.net</strong>
+                <small>Delivery</small>
+                <small class="is-on">Stream</small>
+              </aside>
+              <div class="demo-main">
+                <p class="demo-kicker">Video library · Urbe Filmes</p>
+                <h4>Enviar o arquivo</h4>
+                <p>Delivery → Stream → abra a biblioteca → Upload a Video. O encode começa sozinho.</p>
+                <button type="button" class="demo-hot" tabindex="-1">Upload a Video</button>
+              </div>
+            </article>
+            <article class="demo-scene" data-scene="2">
+              <aside class="demo-side">
+                <strong>Stream</strong>
+                <small class="is-on">Videos</small>
+                <small>API</small>
+              </aside>
+              <div class="demo-main">
+                <p class="demo-kicker">Video details</p>
+                <h4>Noite na Cinelândia</h4>
+                <p>Abra o vídeo. O guid está no campo Video ID — ou no embed, depois da biblioteca.</p>
+                <label class="demo-copy">
+                  Video ID
+                  <code>b7e1c4a0-12ab-4c3d-9e8f-55aa66bb77cc</code>
+                </label>
+              </div>
+            </article>
+            <article class="demo-scene" data-scene="3">
+              <aside class="demo-side">
+                <strong>Stream</strong>
+                <small>Videos</small>
+                <small class="is-on">API</small>
+              </aside>
+              <div class="demo-main">
+                <p class="demo-kicker">Library → API</p>
+                <h4>Biblioteca Bunny</h4>
+                <p>Na aba API da mesma biblioteca aparece o Library ID. É o número da URL de embed.</p>
+                <label class="demo-copy">
+                  Video library ID
+                  <code>12345</code>
+                </label>
+              </div>
+            </article>
+            <article class="demo-scene" data-scene="4">
+              <aside class="demo-side demo-side-urbe">
+                <strong>urbe</strong>
+                <small>Catálogo</small>
+                <small class="is-on">Publicar</small>
+              </aside>
+              <div class="demo-main demo-main-urbe">
+                <p class="demo-kicker">Anúncio do filme</p>
+                <h4>Colar no Player Bunny</h4>
+                <p>ID do vídeo e biblioteca entram aqui. Sem isso a cota vende, mas o player não abre.</p>
+                <label class="demo-copy is-urbe">ID do vídeo na Bunny<code>b7e1c4a0-12ab-4c3d-9e8f-55aa66bb77cc</code></label>
+                <label class="demo-copy is-urbe">Biblioteca Bunny<code>12345</code></label>
+              </div>
+            </article>
+            <span class="demo-cursor" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="bunny-guide-controls">
+          <button type="button" class="ghost" id="bunny-guide-prev">Anterior</button>
+          <div class="bunny-guide-dots" id="bunny-guide-dots" role="tablist" aria-label="Passos do exemplo"></div>
+          <button type="button" class="ghost" id="bunny-guide-play">Pausar</button>
+          <button type="button" id="bunny-guide-next">Próximo</button>
+        </div>
+        <ol class="bunny-guide-list">
+          <li>Em <a href="https://dash.bunny.net/" target="_blank" rel="noopener noreferrer">dash.bunny.net</a>, abra Delivery → Stream e a biblioteca do filme.</li>
+          <li>Envie o arquivo com Upload a Video e espere o encode terminar.</li>
+          <li>No vídeo, copie o Video ID. Na aba API da biblioteca, copie o Library ID.</li>
+          <li>Cole os dois neste anúncio — ou cole a URL de embed no ID do vídeo.</li>
+        </ol>
+        <p class="field-hint">
+          Guia oficial:
+          <a href="https://docs.bunny.net/docs/stream/quickstart" target="_blank" rel="noopener noreferrer">Bunny Stream quickstart</a>.
+          Os números da tela são de exemplo.
+        </p>
+        <div class="dialog-actions">
+          <button type="button" class="ghost dialog-close">Fechar</button>
+          <button type="button" id="bunny-guide-apply">Entendi · colar os IDs</button>
+        </div>
+      </div>
     </dialog>
 
     <dialog id="player-dialog">

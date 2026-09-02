@@ -62,7 +62,17 @@ const refs = {
   playerStatus: document.querySelector("#player-status"),
   bunnyStatusCopy: document.querySelector("#bunny-status-copy"),
   bunnyCreateBtn: document.querySelector("#bunny-create-btn"),
-  bunnyHint: document.querySelector("#bunny-hint")
+  bunnyHint: document.querySelector("#bunny-hint"),
+  bunnyGuideBtn: document.querySelector("#bunny-guide-btn"),
+  bunnyGuideDialog: document.querySelector("#bunny-guide-dialog"),
+  bunnyGuideStage: document.querySelector("#bunny-guide-stage"),
+  bunnyGuideCaption: document.querySelector("#bunny-guide-caption"),
+  bunnyGuideUrl: document.querySelector("#bunny-guide-url"),
+  bunnyGuideDots: document.querySelector("#bunny-guide-dots"),
+  bunnyGuidePlay: document.querySelector("#bunny-guide-play"),
+  bunnyGuidePrev: document.querySelector("#bunny-guide-prev"),
+  bunnyGuideNext: document.querySelector("#bunny-guide-next"),
+  bunnyGuideApply: document.querySelector("#bunny-guide-apply")
 };
 
 const actionHandlers = {
@@ -81,6 +91,32 @@ let pixTimerInterval = null;
 let pixPollInterval = null;
 let playbackPollInterval = null;
 let playbackShareId = "";
+let bunnyGuideTimer = null;
+let bunnyGuideStep = 1;
+let bunnyGuidePlaying = false;
+
+const BUNNY_GUIDE_STEPS = [
+  {
+    step: 1,
+    url: "dash.bunny.net → Delivery → Stream",
+    caption: "Na Bunny, abra a biblioteca do filme e envie o arquivo. O encode começa sozinho."
+  },
+  {
+    step: 2,
+    url: "dash.bunny.net → vídeo → Video ID",
+    caption: "Abra o vídeo e copie o Video ID (guid). Ele também está na URL de embed, depois da biblioteca."
+  },
+  {
+    step: 3,
+    url: "dash.bunny.net → biblioteca → API",
+    caption: "Na aba API da mesma biblioteca, copie o Library ID. É o número da URL de embed."
+  },
+  {
+    step: 4,
+    url: "urbe → Publicar → Player Bunny",
+    caption: "Cole os dois IDs neste anúncio. Se tiver o embed, cole a URL inteira no ID do vídeo."
+  }
+];
 
 function pixImageSrc(raw) {
   const value = String(raw || "").trim();
@@ -639,8 +675,8 @@ function renderBunnyStatus() {
   }
   if (refs.bunnyHint) {
     refs.bunnyHint.textContent = bunny.signedEmbeds
-      ? "O embed vai assinado. O token só é marcado como usado se a sessão Bunny abrir."
-      : "O player usa o embed da Bunny. O token só é marcado como usado se a sessão abrir.";
+      ? "O embed vai assinado. O token só é marcado como usado se a sessão Bunny abrir. Cole o guid ou a URL de embed."
+      : "O player usa o embed da Bunny. Cole o guid ou a URL de embed — separamos a biblioteca na hora.";
   }
 }
 
@@ -802,6 +838,97 @@ async function logout() {
   showView("catalog");
 }
 
+function parseBunnyIdentifiers(rawVideo, rawLibrary) {
+  const videoInput = String(rawVideo || "").trim();
+  const libraryInput = String(rawLibrary || "").trim();
+  const embed = videoInput.match(
+    /(?:iframe|player)\.mediadelivery\.net\/(?:embed|play)\/(\d+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f-]{8,})/i
+  );
+  if (embed) {
+    return { libraryId: embed[1], videoId: embed[2], fromEmbed: true };
+  }
+  const pair = videoInput.match(/^(\d+)\s*[/,]\s*([0-9a-f-]{8,})$/i);
+  if (pair) {
+    return { libraryId: pair[1], videoId: pair[2], fromEmbed: false };
+  }
+  return { libraryId: libraryInput, videoId: videoInput, fromEmbed: false };
+}
+
+function fillBunnyFieldsFromInput(notifyUser = false) {
+  const videoField = refs.movieForm?.bunnyVideoId;
+  const libraryField = refs.movieForm?.bunnyLibraryId;
+  if (!videoField) return false;
+  const parsed = parseBunnyIdentifiers(videoField.value, libraryField?.value);
+  if (!parsed.videoId) return false;
+  const changed = videoField.value !== parsed.videoId || (libraryField && parsed.libraryId && libraryField.value !== parsed.libraryId);
+  videoField.value = parsed.videoId;
+  if (libraryField && parsed.libraryId) libraryField.value = parsed.libraryId;
+  if (changed && parsed.fromEmbed) {
+    if (refs.bunnyHint) {
+      refs.bunnyHint.textContent = "URL de embed reconhecida. Biblioteca e ID do vídeo foram preenchidos.";
+    }
+    if (notifyUser) notify("Embed da Bunny reconhecido. IDs preenchidos no anúncio.");
+  }
+  return Boolean(parsed.videoId && parsed.libraryId);
+}
+
+function stopBunnyGuide() {
+  if (bunnyGuideTimer) clearInterval(bunnyGuideTimer);
+  bunnyGuideTimer = null;
+  bunnyGuidePlaying = false;
+  if (refs.bunnyGuidePlay) refs.bunnyGuidePlay.textContent = "Reproduzir";
+  refs.bunnyGuideStage?.classList.add("is-paused");
+}
+
+function renderBunnyGuideStep(step) {
+  const total = BUNNY_GUIDE_STEPS.length;
+  bunnyGuideStep = ((step - 1 + total) % total) + 1;
+  const current = BUNNY_GUIDE_STEPS[bunnyGuideStep - 1];
+  if (refs.bunnyGuideStage) refs.bunnyGuideStage.dataset.step = String(bunnyGuideStep);
+  if (refs.bunnyGuideCaption) refs.bunnyGuideCaption.textContent = current.caption;
+  if (refs.bunnyGuideUrl) refs.bunnyGuideUrl.textContent = current.url;
+  refs.bunnyGuideDots?.querySelectorAll("button").forEach((dot, index) => {
+    dot.classList.toggle("is-on", index + 1 === bunnyGuideStep);
+    dot.setAttribute("aria-selected", index + 1 === bunnyGuideStep ? "true" : "false");
+  });
+  const videoField = refs.movieForm?.bunnyVideoId?.closest(".field");
+  const libraryField = refs.movieForm?.bunnyLibraryId?.closest(".field");
+  videoField?.classList.toggle("is-guide-focus", bunnyGuideStep === 4);
+  libraryField?.classList.toggle("is-guide-focus", bunnyGuideStep === 4);
+}
+
+function startBunnyGuide(reset = false) {
+  if (!refs.bunnyGuideDots?.childElementCount) {
+    refs.bunnyGuideDots.innerHTML = BUNNY_GUIDE_STEPS.map(
+      (item, index) =>
+        `<button type="button" role="tab" data-guide-step="${item.step}" aria-label="Passo ${item.step}" class="${index === 0 ? "is-on" : ""}"></button>`
+    ).join("");
+  }
+  const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  renderBunnyGuideStep(reset ? 1 : bunnyGuideStep);
+  if (prefersReduced) {
+    stopBunnyGuide();
+    return;
+  }
+  bunnyGuidePlaying = true;
+  refs.bunnyGuideStage?.classList.remove("is-paused");
+  if (refs.bunnyGuidePlay) refs.bunnyGuidePlay.textContent = "Pausar";
+  if (bunnyGuideTimer) clearInterval(bunnyGuideTimer);
+  bunnyGuideTimer = setInterval(() => renderBunnyGuideStep(bunnyGuideStep + 1), 4200);
+}
+
+function openBunnyGuide() {
+  if (!refs.bunnyGuideDialog) return;
+  startBunnyGuide(true);
+  refs.bunnyGuideDialog.showModal();
+}
+
+function closeBunnyGuideFocus() {
+  stopBunnyGuide();
+  refs.movieForm?.bunnyVideoId?.closest(".field")?.classList.remove("is-guide-focus");
+  refs.movieForm?.bunnyLibraryId?.closest(".field")?.classList.remove("is-guide-focus");
+}
+
 async function createBunnyVideo() {
   const title = String(refs.movieForm?.title?.value || "").trim();
   if (!title) {
@@ -839,6 +966,10 @@ async function createMovie(event) {
     return;
   }
 
+  const bunnyIds = parseBunnyIdentifiers(formData.get("bunnyVideoId"), formData.get("bunnyLibraryId"));
+  if (refs.movieForm?.bunnyVideoId) refs.movieForm.bunnyVideoId.value = bunnyIds.videoId;
+  if (bunnyIds.libraryId && refs.movieForm?.bunnyLibraryId) refs.movieForm.bunnyLibraryId.value = bunnyIds.libraryId;
+
   const payload = {
     title: formData.get("title"),
     description: formData.get("description"),
@@ -851,8 +982,8 @@ async function createMovie(event) {
     cast: formData.get("cast"),
     priceCents,
     totalShares: Number(formData.get("totalShares")),
-    bunnyVideoId: formData.get("bunnyVideoId"),
-    bunnyLibraryId: formData.get("bunnyLibraryId") || undefined
+    bunnyVideoId: bunnyIds.videoId,
+    bunnyLibraryId: bunnyIds.libraryId || undefined
   };
 
   await withLoading(async () => {
@@ -1247,6 +1378,27 @@ function bindForms() {
   refs.movieForm.addEventListener("submit", (event) => createMovie(event).catch((error) => notify(error.message, true)));
   refs.movieForm.querySelector('[name="priceReais"]').addEventListener("input", updatePriceHint);
   refs.bunnyCreateBtn?.addEventListener("click", () => createBunnyVideo().catch((error) => notify(error.message, true)));
+  refs.bunnyGuideBtn?.addEventListener("click", () => openBunnyGuide());
+  refs.bunnyGuidePrev?.addEventListener("click", () => renderBunnyGuideStep(bunnyGuideStep - 1));
+  refs.bunnyGuideNext?.addEventListener("click", () => renderBunnyGuideStep(bunnyGuideStep + 1));
+  refs.bunnyGuidePlay?.addEventListener("click", () => {
+    if (bunnyGuidePlaying) stopBunnyGuide();
+    else startBunnyGuide();
+  });
+  refs.bunnyGuideDots?.addEventListener("click", (event) => {
+    const step = Number(event.target.closest("[data-guide-step]")?.dataset.guideStep);
+    if (step) renderBunnyGuideStep(step);
+  });
+  refs.bunnyGuideApply?.addEventListener("click", () => {
+    refs.bunnyGuideDialog?.close();
+    refs.movieForm?.bunnyVideoId?.focus();
+    notify("Cole o Video ID ou a URL de embed. A biblioteca entra no campo de baixo.");
+  });
+  refs.bunnyGuideDialog?.addEventListener("close", () => closeBunnyGuideFocus());
+  refs.movieForm?.bunnyVideoId?.addEventListener("paste", () => {
+    window.setTimeout(() => fillBunnyFieldsFromInput(true), 0);
+  });
+  refs.movieForm?.bunnyVideoId?.addEventListener("change", () => fillBunnyFieldsFromInput(true));
   refs.listingForm.addEventListener("submit", (event) => submitListing(event).catch((error) => notify(error.message, true)));
   refs.confirmForm.addEventListener("submit", (event) => submitConfirm(event).catch((error) => notify(error.message, true)));
   refs.pixCopyBtn.addEventListener("click", () => copiarPix());
