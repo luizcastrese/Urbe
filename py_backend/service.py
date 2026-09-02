@@ -277,76 +277,76 @@ def describe_token_state(share, token, listing, pending_playback, movie):
             "detail": " ".join(
                 part
                 for part in (
-                    "1 visualizacao restante.",
+                    "1 visualização restante.",
                     origin,
-                    "O token so e gasto se a sessao Bunny abrir.",
+                    "O token só é gasto se a sessão Bunny abrir.",
                 )
                 if part
             ),
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "ready", "label": "Aguardando assistir", "state": "current"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "todo"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "todo"},
             ],
         },
         "opening_player": {
             "label": "Abrindo player",
             "tokenLabel": "Token em uso",
-            "detail": "Sessao Bunny em andamento. Se o player nao abrir, o token volta a ficar ativo.",
+            "detail": "Sessão Bunny em andamento. Se o player não abrir, o token volta a ficar ativo.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "ready", "label": "Aguardando assistir", "state": "done"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "current"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "current"},
             ],
         },
         "held_for_sale": {
-            "label": "A venda",
+            "label": "À venda",
             "tokenLabel": "Token em espera",
-            "detail": "O token continua valido, mas assistir fica bloqueado enquanto a cota esta no mercado. Se vender, este token e revogado e o comprador recebe um novo.",
+            "detail": "O token continua válido, mas assistir fica bloqueado enquanto a cota está no mercado. Se vender, este token é revogado e o comprador recebe um novo.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "held", "label": "Em espera no mercado", "state": "current"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "blocked"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
             ],
         },
         "checkout_reserved": {
             "label": "Checkout em andamento",
             "tokenLabel": "Token reservado",
-            "detail": "A cota esta presa em um pagamento. Se o checkout expirar, ela volta para voce.",
+            "detail": "A cota está presa em um pagamento. Se o checkout expirar, ela volta para você.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "held", "label": "Reservada no checkout", "state": "current"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "blocked"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
             ],
         },
         "used": {
             "label": "Assistida",
             "tokenLabel": "Token usado",
-            "detail": "A visualizacao unica ja foi liberada no Bunny. Esta cota nao volta ao mercado.",
+            "detail": "A visualização única já foi liberada no Bunny. Esta cota não volta ao mercado.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "ready", "label": "Aguardando assistir", "state": "done"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "done"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "done"},
             ],
         },
         "revoked": {
             "label": "Token revogado",
             "tokenLabel": "Revogado na revenda",
-            "detail": "O token antigo morreu na transferencia. O comprador recebeu um token novo.",
+            "detail": "O token antigo morreu na transferência. O comprador recebeu um token novo.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
-                {"id": "revoked", "label": "Revogado na transferencia", "state": "done"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "blocked"},
+                {"id": "revoked", "label": "Revogado na transferência", "state": "done"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
             ],
         },
         "missing": {
             "label": "Sem token",
             "tokenLabel": "Token ausente",
-            "detail": "Esta cota nao tem um token ativo para o player.",
+            "detail": "Esta cota não tem um token ativo para o player.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "todo"},
                 {"id": "ready", "label": "Aguardando assistir", "state": "todo"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "todo"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "todo"},
             ],
         },
     }
@@ -357,11 +357,11 @@ def describe_token_state(share, token, listing, pending_playback, movie):
     if code == "ready" and not bunny_ready:
         story = {
             **story,
-            "detail": "O token esta ativo, mas o filme nao tem player Bunny. Assistir fica bloqueado para nao gastar a visualizacao.",
+            "detail": "O token está ativo, mas o filme não tem player Bunny. Assistir fica bloqueado para não gastar a visualização.",
             "steps": [
                 {"id": "issued", "label": "Token emitido", "state": "done"},
                 {"id": "ready", "label": "Aguardando player Bunny", "state": "current"},
-                {"id": "bunny", "label": "Sessao Bunny", "state": "blocked"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
             ],
         }
 
