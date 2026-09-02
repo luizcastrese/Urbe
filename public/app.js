@@ -584,6 +584,8 @@ function renderBunnyStatus() {
       : "O player usa o embed da Bunny. O token só é marcado como usado se a sessão abrir.";
   }
 }
+
+function renderAll() {
   renderSession();
   renderGenreFilter();
   renderMovies();
