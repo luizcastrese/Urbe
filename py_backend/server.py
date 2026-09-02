@@ -15,7 +15,9 @@ from .service import UrbeService
 from .store import JsonStore, PostgresStore
 from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes, verify_openpix_signature
 
-ROOT_DIR = os.getcwd()
+PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(PACKAGE_DIR, os.pardir))
+ROOT_DIR = REPO_ROOT if os.path.isdir(os.path.join(REPO_ROOT, "public")) else os.getcwd()
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
 CONFIG = load_config()
 STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)

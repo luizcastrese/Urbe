@@ -3,7 +3,7 @@ import shutil
 import tempfile
 import unittest
 
-from py_backend.config import BunnyConfig, Config, PaymentsConfig, StripeConfig
+from py_backend.config import BunnyConfig, Config, OpenPixConfig, PaymentsConfig
 from py_backend.errors import AppError
 from py_backend.service import UrbeService
 from py_backend.store import JsonStore
@@ -17,6 +17,7 @@ class ServiceTestCase(unittest.TestCase):
         config = Config(
             port=3000,
             db_file=db_file,
+            database_url="",
             session_duration_days=30,
             checkout_reservation_minutes=15,
             playback_session_seconds=120,
@@ -31,7 +32,7 @@ class ServiceTestCase(unittest.TestCase):
                 currency="BRL",
                 success_url="http://localhost:3000/?checkout=success&orderId={ORDER_ID}&session_id={CHECKOUT_SESSION_ID}",
                 cancel_url="http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}&session_id={CHECKOUT_SESSION_ID}",
-                stripe=StripeConfig(secret_key="", api_base="https://api.stripe.com/v1"),
+                openpix=OpenPixConfig(app_id=""),
             ),
         )
 

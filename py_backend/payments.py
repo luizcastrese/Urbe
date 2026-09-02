@@ -96,12 +96,15 @@ class OpenPixPaymentGateway:
             )
 
         charge = parsed.get("charge", {})
+        qr_code = charge.get("qrCodeImage") or charge.get("qrCode") or parsed.get("qrCodeImage")
+        pix_code = charge.get("pixCopiaECola") or charge.get("brCode")
         return {
             "provider": self.provider,
             "sessionId": correlation_id,
             "checkoutUrl": None,
-            "pixCopiaECola": charge.get("pixCopiaECola"),
-            "qrCodeBase64": charge.get("qrCode"),
+            "pixCopiaECola": pix_code,
+            "qrCodeBase64": qr_code,
+            "expiresIn": payload.get("expiresIn") or 900,
             "paid": False,
             "amountCents": order["amountCents"],
             "currency": self.currency,
@@ -114,7 +117,8 @@ class OpenPixPaymentGateway:
         status, raw_text = self._request("GET", f"/charge/{session_id}")
         parsed = json.loads(raw_text) if raw_text else {}
         charge = parsed.get("charge", {})
-        paid = charge.get("status") == "COMPLETED"
+        paid_status = str(charge.get("status") or "").upper()
+        paid = paid_status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
 
         return {
             "provider": self.provider,

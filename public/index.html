@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Urbe | Tokens de Visualização</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <div class="aura aura-left" aria-hidden="true"></div>
+    <div class="aura aura-right" aria-hidden="true"></div>
+    <div class="sparkles" aria-hidden="true"></div>
+    <div id="progress" class="progress" hidden></div>
+
+    <a class="skip-link" href="#app-main">Ir para o conteúdo</a>
+
+    <header class="topbar">
+      <a class="brand-link" href="#catalog" data-nav="catalog" aria-label="Urbe, ir para o catálogo">
+        <img class="brand-logo brand-logo-compact" src="./assets/urbe-logo.svg" alt="urbe" />
+      </a>
+
+      <nav class="app-nav" aria-label="Seções da plataforma">
+        <button type="button" class="nav-btn is-active" data-nav="catalog">Catálogo</button>
+        <button type="button" class="nav-btn" data-nav="market">Mercado</button>
+        <button type="button" class="nav-btn" data-nav="portfolio" data-auth-required="true">
+          Minhas cotas <span class="nav-count" id="shares-count" hidden></span>
+        </button>
+        <button type="button" class="nav-btn" data-nav="publish" data-auth-required="true">Publicar</button>
+      </nav>
+
+      <div class="session session-compact" id="session-box">
+        <p id="session-status">Entrando...</p>
+        <button type="button" id="login-btn" class="ghost">Entrar</button>
+        <button type="button" id="logout-btn" class="ghost" hidden>Sair</button>
+      </div>
+    </header>
+
+    <main id="app-main" class="app-main">
+      <section class="view" id="view-catalog" data-view="catalog">
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">Premiere Market</p>
+            <h1>Filmes disponíveis</h1>
+            <p class="page-copy">Compre uma cota e assista uma vez — ou revenda enquanto o token ainda está ativo.</p>
+          </div>
+          <div class="toolbar">
+            <label class="sr-only" for="movie-search">Buscar filme</label>
+            <input id="movie-search" type="search" placeholder="Buscar título, diretor ou elenco" autocomplete="off" />
+            <label class="sr-only" for="movie-genre">Filtrar por gênero</label>
+            <select id="movie-genre">
+              <option value="">Todos os gêneros</option>
+            </select>
+          </div>
+        </div>
+        <div id="movies-grid" class="grid"></div>
+      </section>
+
+      <section class="view" id="view-market" data-view="market" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">Secondary Market</p>
+            <h1>Mercado secundário</h1>
+            <p class="page-copy">Cotas anunciadas por outros espectadores. O token antigo é revogado na transferência.</p>
+          </div>
+        </div>
+        <div id="market-grid" class="grid"></div>
+      </section>
+
+      <section class="view" id="view-portfolio" data-view="portfolio" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">My Position</p>
+            <h1>Minhas cotas</h1>
+            <p class="page-copy">Assista agora ou anuncie a revenda. Cada visualização é única.</p>
+          </div>
+        </div>
+        <div id="pending-banner" class="banner" hidden></div>
+        <div id="shares-grid" class="grid"></div>
+        <section class="card card-transactions" id="transactions-card">
+          <h2>Histórico</h2>
+          <div id="transactions-grid" class="ledger"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-publish" data-view="publish" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">Studio Drop</p>
+            <h1>Publicar filme</h1>
+            <p class="page-copy">Defina o preço da cota e a quantidade. Cada cota vira um token de uma visualização.</p>
+          </div>
+        </div>
+        <form id="movie-form" class="card card-create stack" method="post" action="/api/movies">
+          <input name="title" placeholder="Título do filme" required maxlength="160" />
+          <textarea name="description" rows="3" placeholder="Sinopse" maxlength="2000"></textarea>
+          <div class="row">
+            <input name="director" placeholder="Diretor(a)" maxlength="120" />
+            <input name="releaseYear" type="number" min="1888" max="2100" placeholder="Ano de lançamento" />
+          </div>
+          <input name="coverImageUrl" type="url" placeholder="URL da capa" />
+          <div class="row">
+            <select name="genre" required>
+              <option value="" selected disabled>Gênero</option>
+              <option value="Drama">Drama</option>
+              <option value="Comedia">Comédia</option>
+              <option value="Acao">Ação</option>
+              <option value="Suspense">Suspense</option>
+              <option value="Terror">Terror</option>
+              <option value="Romance">Romance</option>
+              <option value="Ficcao Cientifica">Ficção Científica</option>
+              <option value="Documentario">Documentário</option>
+              <option value="Animacao">Animação</option>
+              <option value="Aventura">Aventura</option>
+              <option value="Fantasia">Fantasia</option>
+            </select>
+            <input name="durationMinutes" type="number" min="1" max="600" placeholder="Duração (min)" required />
+          </div>
+          <input name="cast" placeholder="Elenco (separado por vírgula)" />
+          <input name="trailerUrl" type="url" placeholder="URL do trailer" />
+          <div class="row">
+            <label class="field">
+              <span>Preço da cota (R$)</span>
+              <input name="priceReais" type="text" inputmode="decimal" placeholder="25,00" required />
+            </label>
+            <label class="field">
+              <span>Quantidade de cotas</span>
+              <input name="totalShares" type="number" min="1" max="100000" placeholder="100" required />
+            </label>
+          </div>
+          <p class="field-hint" id="price-hint">O comprador paga esse valor por uma visualização.</p>
+          <div class="row">
+            <input name="bunnyVideoId" placeholder="bunnyVideoId" required />
+            <input name="bunnyLibraryId" placeholder="bunnyLibraryId (opcional)" />
+          </div>
+          <button type="submit">Publicar filme</button>
+        </form>
+      </section>
+
+      <section class="view" id="view-account" data-view="account" hidden>
+        <div class="page-head">
+          <div>
+            <p class="eyebrow">Acesso</p>
+            <h1>Entre para continuar</h1>
+            <p class="page-copy" id="account-copy">Crie uma conta ou faça login para comprar, assistir e publicar.</p>
+          </div>
+        </div>
+        <section class="card card-auth" id="auth-card">
+          <div class="auth-grid">
+            <form id="register-form" class="stack" method="post" action="/api/auth/register">
+              <h3>Criar conta</h3>
+              <input name="name" placeholder="Nome" required autocomplete="name" />
+              <input name="email" type="email" placeholder="E-mail" required autocomplete="email" />
+              <input name="password" type="password" placeholder="Senha (mín. 6)" minlength="6" required autocomplete="new-password" />
+              <button type="submit">Criar conta e entrar</button>
+            </form>
+            <form id="login-form" class="stack" method="post" action="/api/auth/login">
+              <h3>Já tenho conta</h3>
+              <input name="email" type="email" placeholder="E-mail" required autocomplete="email" />
+              <input name="password" type="password" placeholder="Senha" required autocomplete="current-password" />
+              <button type="submit">Entrar</button>
+            </form>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <aside class="toast" id="toast" role="status" aria-live="polite"></aside>
+
+    <dialog id="listing-dialog" class="app-dialog">
+      <form method="dialog" class="dialog-shell" id="listing-form">
+        <div class="player-head">
+          <h3>Anunciar revenda</h3>
+          <button type="button" class="ghost dialog-close">Fechar</button>
+        </div>
+        <p class="page-copy" id="listing-movie-title">Definir preço da cota</p>
+        <label class="field">
+          <span>Preço (R$)</span>
+          <input id="listing-price" name="priceReais" type="text" inputmode="decimal" placeholder="25,00" required />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" class="ghost dialog-close">Cancelar</button>
+          <button type="submit" value="confirm">Anunciar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="confirm-dialog" class="app-dialog">
+      <form method="dialog" class="dialog-shell" id="confirm-form">
+        <div class="player-head">
+          <h3 id="confirm-title">Confirmar</h3>
+          <button type="button" class="ghost dialog-close">Fechar</button>
+        </div>
+        <p class="page-copy" id="confirm-copy"></p>
+        <div class="dialog-actions">
+          <button type="button" class="ghost dialog-close">Agora não</button>
+          <button type="submit" value="confirm" id="confirm-accept">Confirmar</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="pix-dialog" class="app-dialog">
+      <form method="dialog" class="dialog-shell pix-shell">
+        <div class="player-head">
+          <h3>Pagamento via Pix</h3>
+          <button type="button" class="ghost dialog-close">Fechar</button>
+        </div>
+        <p class="page-copy" id="pixMovieTitle">Cota de visualização</p>
+        <div class="pix-qr-wrap">
+          <img id="pixQrCode" alt="QR Code Pix" />
+        </div>
+        <label class="field">
+          <span>Pix copia e cola</span>
+          <input id="pixCopiaCola" type="text" readonly />
+        </label>
+        <button type="button" id="pix-copy-btn" class="ghost">Copiar código Pix</button>
+        <p class="pix-timer">Expira em <span id="pixTimer">15:00</span></p>
+        <p class="page-copy">Pague no app do banco. Detectamos o pagamento automaticamente.</p>
+        <button type="button" id="pix-check-btn">Já paguei · verificar agora</button>
+      </form>
+    </dialog>
+
+    <dialog id="player-dialog">
+      <form method="dialog" class="player-shell">
+        <div class="player-head">
+          <h3 id="player-title">Reprodução</h3>
+          <button type="submit" class="ghost">Fechar</button>
+        </div>
+        <iframe
+          id="player-frame"
+          title="Urbe Player"
+          allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
+          allowfullscreen
+        ></iframe>
+      </form>
+    </dialog>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
