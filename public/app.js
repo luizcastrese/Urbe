@@ -80,6 +80,8 @@ function pixImageSrc(raw) {
   if (/^(data:|https?:)/i.test(value)) return value;
   return `data:image/png;base64,${value}`;
 }
+
+function escapeHtml(text) {
   return String(text || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
@@ -615,12 +617,13 @@ async function bootstrapSession() {
 
 async function register(event) {
   event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form).entries());
   await withLoading(async () => {
     const response = await api("/api/auth/register", { method: "POST", body: payload });
     setSession(response.sessionToken, response.user);
     notify("Conta criada. Bem-vindo à Urbe.");
-    event.currentTarget.reset();
+    form.reset();
     await refreshData();
     await resumePendingAction();
     if (state.view === "account") showView("catalog");
@@ -629,12 +632,13 @@ async function register(event) {
 
 async function login(event) {
   event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form).entries());
   await withLoading(async () => {
     const response = await api("/api/auth/login", { method: "POST", body: payload });
     setSession(response.sessionToken, response.user);
     notify(`Olá, ${response.user.name}.`);
-    event.currentTarget.reset();
+    form.reset();
     await refreshData();
     await resumePendingAction();
     if (state.view === "account") showView("catalog");
@@ -655,7 +659,8 @@ async function logout() {
 
 async function createMovie(event) {
   event.preventDefault();
-  const formData = new FormData(event.currentTarget);
+  const form = event.currentTarget;
+  const formData = new FormData(form);
   const priceCents = parseReaisToCents(formData.get("priceReais"));
   if (!Number.isFinite(priceCents)) {
     notify("Informe um preço válido em reais, por exemplo 25,00.", true);
@@ -681,7 +686,7 @@ async function createMovie(event) {
   await withLoading(async () => {
     await api("/api/movies", { method: "POST", body: payload });
     notify("Filme publicado. As cotas já estão no catálogo.");
-    event.currentTarget.reset();
+    form.reset();
     await refreshData();
     showView("catalog");
   });
