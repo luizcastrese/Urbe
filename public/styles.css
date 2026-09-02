@@ -888,15 +888,20 @@ dialog,
 }
 
 .brand-link {
-  display: block;
-  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
 }
 
-.brand-logo-compact {
-  width: min(168px, 36vw);
-  filter:
-    drop-shadow(0 0 12px rgba(130, 201, 255, 0.32))
-    drop-shadow(0 0 24px rgba(105, 179, 245, 0.18));
+.brand-word {
+  font-family: "Marcellus", Georgia, serif;
+  font-size: 1.35rem;
+  letter-spacing: 0.18em;
+  text-transform: lowercase;
+  color: #d7eefc;
+  text-shadow:
+    0 0 12px rgba(109, 195, 251, 0.45),
+    0 0 24px rgba(109, 195, 251, 0.25);
 }
 
 .app-nav {
