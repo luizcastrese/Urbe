@@ -2,7 +2,10 @@ import json
 import os
 import threading
 
-import psycopg
+try:
+    import psycopg
+except ImportError:  # Postgres is optional when using the JSON store.
+    psycopg = None
 
 from .utils import deep_clone
 
@@ -108,6 +111,8 @@ class JsonStore:
 
 class PostgresStore:
     def __init__(self, database_url):
+        if not psycopg:
+            raise ValueError("psycopg is required for DATABASE_URL")
         if not database_url:
             raise ValueError("database_url is required")
         self.database_url = database_url

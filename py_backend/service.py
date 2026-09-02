@@ -219,6 +219,33 @@ def compact_movie_for_listing(movie):
     }
 
 
+def to_public_checkout(checkout):
+    if not checkout:
+        return None
+
+    payload = {
+        "provider": checkout.get("provider"),
+        "sessionId": checkout.get("sessionId"),
+        "checkoutUrl": checkout.get("checkoutUrl"),
+        "paymentStatus": checkout.get("paymentStatus"),
+        "status": checkout.get("status"),
+        "paid": checkout.get("paid") is True,
+    }
+    if checkout.get("pixCopiaECola"):
+        payload["pixCopiaECola"] = checkout.get("pixCopiaECola")
+    qr_code = checkout.get("qrCodeBase64") or checkout.get("qrCodeImage")
+    if qr_code:
+        payload["qrCodeBase64"] = qr_code
+    if checkout.get("expiresIn") is not None:
+        payload["expiresIn"] = checkout.get("expiresIn")
+    return payload
+
+
+def iso_after(*, days=0, minutes=0, seconds=0):
+    stamp = dt.datetime.utcnow() + dt.timedelta(days=days, minutes=minutes, seconds=seconds)
+    return stamp.replace(microsecond=0).isoformat() + "Z"
+
+
 class UrbeService:
     def __init__(self, store, config):
         self.store = store
@@ -537,14 +564,7 @@ class UrbeService:
             if order["status"] != "pending":
                 return {
                     "order": self._public_order(order),
-                    "checkout": {
-                        "provider": checkout.get("provider"),
-                        "sessionId": checkout.get("sessionId"),
-                        "checkoutUrl": checkout.get("checkoutUrl"),
-                        "paymentStatus": checkout.get("paymentStatus"),
-                        "status": checkout.get("status"),
-                        "paid": checkout.get("paid") is True,
-                    },
+                    "checkout": to_public_checkout(checkout),
                     "purchase": None,
                 }
 
@@ -558,14 +578,7 @@ class UrbeService:
             if not checkout.get("paid"):
                 return {
                     "order": self._public_order(order),
-                    "checkout": {
-                        "provider": checkout.get("provider"),
-                        "sessionId": checkout.get("sessionId"),
-                        "checkoutUrl": checkout.get("checkoutUrl"),
-                        "paymentStatus": checkout.get("paymentStatus"),
-                        "status": checkout.get("status"),
-                        "paid": False,
-                    },
+                    "checkout": to_public_checkout(checkout),
                     "purchase": None,
                 }
 
@@ -573,14 +586,7 @@ class UrbeService:
             purchase = self._finalize_paid_order(db, order, checkout)
             return {
                 "order": self._public_order(order),
-                "checkout": {
-                    "provider": checkout.get("provider"),
-                    "sessionId": checkout.get("sessionId"),
-                    "checkoutUrl": checkout.get("checkoutUrl"),
-                    "paymentStatus": checkout.get("paymentStatus"),
-                    "status": checkout.get("status"),
-                    "paid": True,
-                },
+                "checkout": to_public_checkout(checkout),
                 "purchase": purchase,
             }
 
@@ -668,14 +674,7 @@ class UrbeService:
             if order["status"] != "pending":
                 return {
                     "order": self._public_order(order),
-                    "checkout": {
-                        "provider": checkout.get("provider"),
-                        "sessionId": checkout.get("sessionId"),
-                        "checkoutUrl": checkout.get("checkoutUrl"),
-                        "paymentStatus": checkout.get("paymentStatus"),
-                        "status": checkout.get("status"),
-                        "paid": checkout.get("paid") is True,
-                    },
+                    "checkout": to_public_checkout(checkout),
                     "purchase": None,
                 }
 
@@ -689,14 +688,7 @@ class UrbeService:
             if not checkout.get("paid"):
                 return {
                     "order": self._public_order(order),
-                    "checkout": {
-                        "provider": checkout.get("provider"),
-                        "sessionId": checkout.get("sessionId"),
-                        "checkoutUrl": checkout.get("checkoutUrl"),
-                        "paymentStatus": checkout.get("paymentStatus"),
-                        "status": checkout.get("status"),
-                        "paid": False,
-                    },
+                    "checkout": to_public_checkout(checkout),
                     "purchase": None,
                 }
 
@@ -704,14 +696,7 @@ class UrbeService:
             purchase = self._finalize_paid_order(db, order, checkout)
             return {
                 "order": self._public_order(order),
-                "checkout": {
-                    "provider": checkout.get("provider"),
-                    "sessionId": checkout.get("sessionId"),
-                    "checkoutUrl": checkout.get("checkoutUrl"),
-                    "paymentStatus": checkout.get("paymentStatus"),
-                    "status": checkout.get("status"),
-                    "paid": True,
-                },
+                "checkout": to_public_checkout(checkout),
                 "purchase": purchase,
             }
 
@@ -899,3 +884,537 @@ class UrbeService:
             return shares
 
         return self.store.transaction(tx)
+
+    def get_user_transactions(self, user_id):
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            items = []
+            for txn in db["transactions"]:
+                if txn.get("buyerId") != user_id and txn.get("sellerId") != user_id:
+                    continue
+                movie = next((item for item in db["movies"] if item["id"] == txn.get("movieId")), None)
+                items.append(
+                    {
+                        **clone(txn),
+                        "movieTitle": (movie or {}).get("title") or txn.get("movieTitle") or "Filme",
+                        "price": (txn.get("priceCents") or 0) / 100,
+                    }
+                )
+            items.sort(key=lambda item: parse_date_ms(item.get("createdAt")), reverse=True)
+            return items
+
+        return self.store.transaction(tx)
+
+    def list_market(self, movie_id=None):
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            items = []
+            for listing in db["listings"]:
+                if listing.get("status") != "active":
+                    continue
+                if movie_id and listing.get("movieId") != movie_id:
+                    continue
+                items.append(self._to_public_listing(db, listing))
+            items.sort(key=lambda item: parse_date_ms(item.get("createdAt")), reverse=True)
+            return items
+
+        return self.store.transaction(tx)
+
+    def create_listing(self, user_id, share_id, price_cents):
+        price = ensure_positive_int(price_cents, "priceCents")
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            share = next((item for item in db["shares"] if item["id"] == share_id), None)
+            if not share or share.get("ownerId") != user_id:
+                raise AppError("Cota nao encontrada.", 404, "SHARE_NOT_FOUND")
+            if share.get("state") != "owned":
+                raise AppError("Somente cotas ativas podem ser anunciadas.", 409, "INVALID_SHARE_STATE")
+
+            existing = next(
+                (
+                    item
+                    for item in db["listings"]
+                    if item.get("shareId") == share_id and item.get("status") in {"active", "reserved"}
+                ),
+                None,
+            )
+            if existing:
+                raise AppError("Esta cota ja possui um anuncio ativo.", 409, "LISTING_EXISTS")
+
+            now = now_iso()
+            listing = {
+                "id": next_id(db, "listing", "lst"),
+                "shareId": share["id"],
+                "movieId": share["movieId"],
+                "sellerId": user_id,
+                "priceCents": price,
+                "status": "active",
+                "createdAt": now,
+                "reservedByOrderId": None,
+                "reservationExpiresAt": None,
+            }
+            db["listings"].append(listing)
+            share["state"] = "listed"
+            share["updatedAt"] = now
+            return clone(listing)
+
+        return self.store.transaction(tx)
+
+    def cancel_listing(self, user_id, listing_id):
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            listing = next((item for item in db["listings"] if item["id"] == listing_id), None)
+            if not listing:
+                raise AppError("Anuncio nao encontrado.", 404, "LISTING_NOT_FOUND")
+            if listing.get("sellerId") != user_id:
+                raise AppError("Voce nao pode cancelar este anuncio.", 403, "FORBIDDEN")
+            if listing.get("status") != "active":
+                raise AppError("Somente anuncios ativos podem ser cancelados.", 409, "LISTING_NOT_ACTIVE")
+
+            now = now_iso()
+            listing["status"] = "canceled"
+            listing["updatedAt"] = now
+            share = next((item for item in db["shares"] if item["id"] == listing.get("shareId")), None)
+            if share and share.get("ownerId") == user_id and share.get("state") == "listed":
+                share["state"] = "owned"
+                share["updatedAt"] = now
+            return clone(listing)
+
+        return self.store.transaction(tx)
+
+    def buy_listing(self, user_id, listing_id):
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            buyer = next((item for item in db["users"] if item["id"] == user_id), None)
+            if not buyer:
+                raise AppError("Comprador nao encontrado.", 404, "USER_NOT_FOUND")
+
+            listing = next((item for item in db["listings"] if item["id"] == listing_id), None)
+            if not listing or listing.get("status") != "active":
+                raise AppError("Anuncio indisponivel.", 404, "LISTING_UNAVAILABLE")
+            if listing.get("sellerId") == buyer["id"]:
+                raise AppError("Voce nao pode comprar sua propria cota.", 409, "SELF_PURCHASE")
+
+            share = next((item for item in db["shares"] if item["id"] == listing.get("shareId")), None)
+            movie = next((item for item in db["movies"] if item["id"] == listing.get("movieId")), None)
+            if not share or not movie:
+                raise AppError("Cota do anuncio nao encontrada.", 404, "SHARE_NOT_FOUND")
+
+            return self._transfer_listed_share(
+                db,
+                {
+                    "buyerId": buyer["id"],
+                    "sellerId": listing["sellerId"],
+                    "share": share,
+                    "listing": listing,
+                    "movie": movie,
+                    "priceCents": listing["priceCents"],
+                    "transactionType": "secondary_purchase",
+                },
+            )
+
+        return self.store.transaction(tx)
+
+    def consume_access_token(self, user_id, token_value):
+        token_value = str(token_value or "").strip()
+        if not token_value:
+            raise AppError("Token de acesso e obrigatorio.", 400, "VALIDATION_ERROR")
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            access_token = next((item for item in db["accessTokens"] if item.get("token") == token_value), None)
+            if not access_token:
+                raise AppError("Token invalido ou expirado.", 404, "TOKEN_NOT_FOUND")
+            if access_token.get("status") != "active":
+                raise AppError("Este token ja foi utilizado ou revogado.", 409, "TOKEN_NOT_ACTIVE")
+
+            share = next((item for item in db["shares"] if item["id"] == access_token.get("shareId")), None)
+            if not share:
+                raise AppError("Cota do token nao encontrada.", 404, "SHARE_NOT_FOUND")
+            if share.get("ownerId") != user_id:
+                raise AppError("Este token nao pertence a voce.", 403, "FORBIDDEN")
+            if share.get("state") != "owned":
+                raise AppError("A cota nao esta disponivel para visualizacao.", 409, "INVALID_SHARE_STATE")
+
+            movie = next((item for item in db["movies"] if item["id"] == share.get("movieId")), None)
+            if not movie:
+                raise AppError("Filme nao encontrado.", 404, "MOVIE_NOT_FOUND")
+
+            now = now_iso()
+            watch_token = random_token("watch")
+            client_secret = random_token("pbk")
+            playback = {
+                "id": next_id(db, "playbackSession", "pbk"),
+                "token": watch_token,
+                "clientSecret": client_secret,
+                "shareId": share["id"],
+                "userId": user_id,
+                "accessTokenId": access_token["id"],
+                "status": "active",
+                "createdAt": now,
+                "consumedAt": None,
+                "expiresAt": iso_after(seconds=int(self.config.playback_session_seconds or 120)),
+                "ipAddress": None,
+                "userAgent": None,
+            }
+            db["playbackSessions"].append(playback)
+
+            access_token["status"] = "used"
+            access_token["usedAt"] = now
+            share["state"] = "consumed"
+            share["consumedAt"] = now
+            share["updatedAt"] = now
+
+            return {
+                "share": clone(share),
+                "movie": compact_movie_for_listing(movie),
+                "playback": {
+                    "watchToken": watch_token,
+                    "watchPath": f"/watch/{watch_token}",
+                    "watchUrl": f"/watch/{watch_token}",
+                    "clientSecret": client_secret,
+                    "expiresAt": playback["expiresAt"],
+                },
+            }
+
+        return self.store.transaction(tx)
+
+    def open_playback_session(self, playback_token, client_info, embed_builder):
+        playback_token = str(playback_token or "").strip()
+        client_info = client_info or {}
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            session = next((item for item in db["playbackSessions"] if item.get("token") == playback_token), None)
+            if not session:
+                raise AppError("Link de reproducao invalido.", 404, "PLAYBACK_NOT_FOUND")
+            if session.get("status") != "active":
+                raise AppError("Esta visualizacao ja foi utilizada.", 409, "PLAYBACK_USED")
+            if parse_date_ms(session.get("expiresAt")) <= utc_now_ms():
+                session["status"] = "expired"
+                raise AppError("Link de reproducao expirado.", 410, "PLAYBACK_EXPIRED")
+            if session.get("clientSecret") != str(client_info.get("clientSecret") or ""):
+                raise AppError("Sessao de reproducao invalida neste navegador.", 403, "PLAYBACK_FORBIDDEN")
+
+            share = next((item for item in db["shares"] if item["id"] == session.get("shareId")), None)
+            movie = next((item for item in db["movies"] if item["id"] == (share or {}).get("movieId")), None)
+            if not share or not movie:
+                raise AppError("Filme nao encontrado para reproducao.", 404, "MOVIE_NOT_FOUND")
+
+            now = now_iso()
+            session["status"] = "used"
+            session["consumedAt"] = now
+            session["ipAddress"] = client_info.get("ipAddress")
+            session["userAgent"] = client_info.get("userAgent")
+
+            embed = embed_builder(
+                {
+                    "libraryId": movie.get("bunnyLibraryId"),
+                    "videoId": movie.get("bunnyVideoId"),
+                    "sessionTag": session["id"],
+                }
+            )
+            return {
+                "movie": compact_movie_for_listing(movie),
+                "playback": {
+                    **(embed or {}),
+                    "watchToken": session["token"],
+                },
+            }
+
+        return self.store.transaction(tx)
+
+    def confirm_order_payment(self, correlation_id):
+        correlation_id = str(correlation_id or "").strip()
+        if not correlation_id:
+            raise AppError("correlationID ausente.", 400, "VALIDATION_ERROR")
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            order = next(
+                (
+                    item
+                    for item in db["paymentOrders"]
+                    if item.get("id") == correlation_id or item.get("providerSessionId") == correlation_id
+                ),
+                None,
+            )
+            if not order:
+                raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
+            if order.get("status") == "paid":
+                return {"alreadyPaid": True, "order": self._public_order(order), "purchase": None}
+            if order.get("status") != "pending":
+                raise AppError("Somente ordens pendentes podem ser confirmadas.", 409, "ORDER_NOT_PENDING")
+
+            checkout = {
+                "provider": order.get("provider"),
+                "sessionId": order.get("providerSessionId") or order.get("id"),
+                "paid": True,
+                "amountCents": order.get("amountCents"),
+                "currency": order.get("currency"),
+                "paymentStatus": "paid",
+                "status": "complete",
+            }
+            purchase = self._finalize_paid_order(db, order, checkout)
+            return {"alreadyPaid": False, "order": self._public_order(order), "purchase": purchase}
+
+        return self.store.transaction(tx)
+
+    def _listings_for_movie(self, db, movie_id):
+        return [
+            self._to_public_listing(db, listing)
+            for listing in db["listings"]
+            if listing.get("movieId") == movie_id and listing.get("status") == "active"
+        ]
+
+    def _to_public_listing(self, db, listing):
+        seller = next((item for item in db["users"] if item["id"] == listing.get("sellerId")), None)
+        movie = next((item for item in db["movies"] if item["id"] == listing.get("movieId")), None)
+        return {
+            **clone(listing),
+            "price": (listing.get("priceCents") or 0) / 100,
+            "seller": sanitize_user(seller) if seller else None,
+            "movie": compact_movie_for_listing(movie) if movie else None,
+        }
+
+    def _create_session(self, db, user_id, now):
+        session = {
+            "id": next_id(db, "session", "ses"),
+            "token": random_token("ses"),
+            "userId": user_id,
+            "createdAt": now,
+            "expiresAt": iso_after(days=int(self.config.session_duration_days or 30)),
+        }
+        db["sessions"].append(session)
+        return session
+
+    def _create_payment_order(self, db, payload):
+        now = now_iso()
+        order = {
+            "id": next_id(db, "paymentOrder", "ord"),
+            "type": payload["type"],
+            "buyerId": payload["buyerId"],
+            "sellerId": payload["sellerId"],
+            "movieId": payload["movieId"],
+            "shareId": payload["shareId"],
+            "listingId": payload.get("listingId"),
+            "amountCents": payload["amountCents"],
+            "currency": payload["currency"],
+            "provider": payload.get("provider"),
+            "status": "pending",
+            "providerSessionId": None,
+            "providerCheckoutUrl": None,
+            "providerPaymentStatus": "pending",
+            "providerRaw": None,
+            "failureReason": None,
+            "createdAt": now,
+            "updatedAt": now,
+            "paidAt": None,
+            "expiresAt": iso_after(minutes=int(self.config.checkout_reservation_minutes or 15)),
+        }
+        db["paymentOrders"].append(order)
+        return order
+
+    def _public_order(self, order):
+        return {
+            "id": order["id"],
+            "type": order.get("type"),
+            "status": order.get("status"),
+            "amountCents": order.get("amountCents"),
+            "amount": (order.get("amountCents") or 0) / 100,
+            "currency": order.get("currency"),
+            "movieId": order.get("movieId"),
+            "shareId": order.get("shareId"),
+            "listingId": order.get("listingId"),
+            "buyerId": order.get("buyerId"),
+            "sellerId": order.get("sellerId"),
+            "provider": order.get("provider"),
+            "providerSessionId": order.get("providerSessionId"),
+            "providerPaymentStatus": order.get("providerPaymentStatus"),
+            "expiresAt": order.get("expiresAt"),
+            "createdAt": order.get("createdAt"),
+            "updatedAt": order.get("updatedAt"),
+            "paidAt": order.get("paidAt"),
+            "failureReason": order.get("failureReason"),
+        }
+
+    def _assert_paid_amount_matches_order(self, order, checkout):
+        paid_amount = checkout.get("amountCents")
+        if paid_amount is not None and int(paid_amount) != int(order.get("amountCents") or 0):
+            raise AppError("Valor pago diverge da ordem.", 409, "AMOUNT_MISMATCH")
+        currency = checkout.get("currency")
+        if currency and str(currency).upper() != str(order.get("currency") or "").upper():
+            raise AppError("Moeda paga diverge da ordem.", 409, "CURRENCY_MISMATCH")
+
+    def _cleanup_expired_reservations(self, db):
+        now = now_iso()
+        now_ms = utc_now_ms()
+        for order in db["paymentOrders"]:
+            if order.get("status") != "pending":
+                continue
+            if parse_date_ms(order.get("expiresAt")) > now_ms:
+                continue
+            self._release_order_reservation(db, order, now)
+            order["status"] = "expired"
+            order["failureReason"] = "Checkout expirado sem pagamento."
+            order["updatedAt"] = now
+
+    def _release_order_reservation(self, db, order, now):
+        share = next((item for item in db["shares"] if item["id"] == order.get("shareId")), None)
+        if share and share.get("reservedByOrderId") == order.get("id"):
+            share["state"] = "available"
+            share["ownerId"] = None
+            share["reservedByOrderId"] = None
+            share["reservationExpiresAt"] = None
+            share["updatedAt"] = now
+
+        listing = next((item for item in db["listings"] if item["id"] == order.get("listingId")), None)
+        if listing and listing.get("reservedByOrderId") == order.get("id"):
+            listing["status"] = "active"
+            listing["reservedByOrderId"] = None
+            listing["reservationExpiresAt"] = None
+            if share and share.get("ownerId") == listing.get("sellerId"):
+                share["state"] = "listed"
+                share["reservedByOrderId"] = None
+                share["reservationExpiresAt"] = None
+                share["updatedAt"] = now
+
+    def _issue_access_token(self, db, share, owner_id, reason, now):
+        token = {
+            "id": next_id(db, "token", "tok"),
+            "token": random_token("tok"),
+            "shareId": share["id"],
+            "ownerId": owner_id,
+            "status": "active",
+            "reason": reason,
+            "issuedAt": now,
+            "usedAt": None,
+            "revokedAt": None,
+        }
+        db["accessTokens"].append(token)
+        return token
+
+    def _revoke_share_tokens(self, db, share_id, now):
+        for token in db["accessTokens"]:
+            if token.get("shareId") == share_id and token.get("status") == "active":
+                token["status"] = "revoked"
+                token["revokedAt"] = now
+
+    def _record_transaction(self, db, payload, now):
+        movie = payload.get("movie") or {}
+        txn = {
+            "id": next_id(db, "transaction", "txn"),
+            "type": payload["transactionType"],
+            "movieId": movie.get("id") or payload.get("movieId"),
+            "movieTitle": movie.get("title") or "",
+            "shareId": payload["share"]["id"],
+            "buyerId": payload["buyerId"],
+            "sellerId": payload.get("sellerId") or movie.get("producerId"),
+            "priceCents": payload["priceCents"],
+            "createdAt": now,
+        }
+        db["transactions"].append(txn)
+        return txn
+
+    def _finalize_primary_purchase(self, db, payload):
+        now = now_iso()
+        share = payload["share"]
+        movie = payload["movie"]
+        buyer_id = payload["buyerId"]
+
+        share["ownerId"] = buyer_id
+        share["state"] = "owned"
+        share["lastPriceCents"] = payload["priceCents"]
+        share["reservedByOrderId"] = None
+        share["reservationExpiresAt"] = None
+        share["updatedAt"] = now
+
+        token = self._issue_access_token(db, share, buyer_id, payload.get("transactionType") or "primary_purchase", now)
+        transaction = self._record_transaction(db, payload, now)
+        return {
+            "share": clone(share),
+            "token": clone(token),
+            "transaction": clone(transaction),
+            "movie": compact_movie_for_listing(movie),
+        }
+
+    def _transfer_listed_share(self, db, payload):
+        now = now_iso()
+        share = payload["share"]
+        listing = payload["listing"]
+        movie = payload["movie"]
+        buyer_id = payload["buyerId"]
+
+        self._revoke_share_tokens(db, share["id"], now)
+
+        listing["status"] = "sold"
+        listing["updatedAt"] = now
+        listing["reservedByOrderId"] = None
+        listing["reservationExpiresAt"] = None
+
+        share["ownerId"] = buyer_id
+        share["state"] = "owned"
+        share["lastPriceCents"] = payload["priceCents"]
+        share["reservedByOrderId"] = None
+        share["reservationExpiresAt"] = None
+        share["updatedAt"] = now
+
+        token = self._issue_access_token(db, share, buyer_id, "resale", now)
+        transaction = self._record_transaction(db, payload, now)
+        return {
+            "share": clone(share),
+            "token": clone(token),
+            "transaction": clone(transaction),
+            "movie": compact_movie_for_listing(movie),
+        }
+
+    def _finalize_paid_order(self, db, order, checkout):
+        if order.get("status") == "paid":
+            return None
+
+        if order.get("type") == "primary":
+            share = next((item for item in db["shares"] if item["id"] == order.get("shareId")), None)
+            movie = next((item for item in db["movies"] if item["id"] == order.get("movieId")), None)
+            if not share or not movie:
+                raise AppError("Cota da ordem nao encontrada.", 404, "SHARE_NOT_FOUND")
+            purchase = self._finalize_primary_purchase(
+                db,
+                {
+                    "buyerId": order["buyerId"],
+                    "sellerId": order.get("sellerId") or movie.get("producerId"),
+                    "movie": movie,
+                    "share": share,
+                    "priceCents": order["amountCents"],
+                    "transactionType": "primary_purchase",
+                },
+            )
+        elif order.get("type") == "secondary":
+            listing = next((item for item in db["listings"] if item["id"] == order.get("listingId")), None)
+            share = next((item for item in db["shares"] if item["id"] == order.get("shareId")), None)
+            movie = next((item for item in db["movies"] if item["id"] == order.get("movieId")), None)
+            if not listing or not share or not movie:
+                raise AppError("Anuncio da ordem nao encontrado.", 404, "LISTING_NOT_FOUND")
+            purchase = self._transfer_listed_share(
+                db,
+                {
+                    "buyerId": order["buyerId"],
+                    "sellerId": order.get("sellerId") or listing.get("sellerId"),
+                    "share": share,
+                    "listing": listing,
+                    "movie": movie,
+                    "priceCents": order["amountCents"],
+                    "transactionType": "secondary_purchase",
+                },
+            )
+        else:
+            raise AppError("Tipo de ordem invalido.", 400, "INVALID_ORDER_TYPE")
+
+        now = now_iso()
+        order["status"] = "paid"
+        order["paidAt"] = now
+        order["updatedAt"] = now
+        order["providerPaymentStatus"] = checkout.get("paymentStatus") or "paid"
+        order["failureReason"] = None
+        return purchase
+
