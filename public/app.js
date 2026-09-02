@@ -544,12 +544,6 @@ function renderShares() {
       const listingLine = share.activeListing
         ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
         : "";
-      const viewsLine =
-        story.remainingViews === 1
-          ? "1 visualização restante"
-          : story.remainingViews === 0
-            ? "Nenhuma visualização restante"
-            : "";
       const countdown =
         story.canResume && story.playbackRemainingSeconds
           ? `<small class="token-countdown">Sessão expira em ${formatCountdown(story.playbackRemainingSeconds)}</small>`
@@ -560,7 +554,7 @@ function renderShares() {
           <strong>${escapeHtml(share.movie?.title || "Filme")}</strong>
           <div class="token-status token-status-${story.cls}">
             <span class="badge ${story.cls}">${escapeHtml(story.label)}</span>
-            <small class="token-line"><strong>${escapeHtml(story.tokenLabel)}</strong> · ${escapeHtml(viewsLine || story.detail)}</small>
+            <small class="token-line"><strong>${escapeHtml(story.tokenLabel)}</strong></small>
             <small class="token-line">${escapeHtml(story.detail)}</small>
             <small class="bunny-line">${escapeHtml(story.bunnyLine)}</small>
             ${tokenStepsHtml(story.steps)}
