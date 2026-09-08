@@ -667,15 +667,6 @@ dialog,
   background: var(--accent);
 }
 
-.app-dialog {
-  width: min(100%, 460px);
-  border-radius: 12px;
-  border: 1px solid var(--line-strong);
-  color: var(--text);
-  background: var(--bg-elev);
-}
-
-
 .view[hidden] {
   display: none !important;
 }
@@ -791,7 +782,7 @@ dialog,
 }
 
 .bunny-guide-dots button.is-on {
-  background: #efd39b;
+  background: var(--accent);
 }
 
 .demo-screen {
@@ -1056,16 +1047,14 @@ dialog,
 .app-dialog {
   width: min(100%, 460px);
   padding: 0;
-  border-radius: 18px;
-  border: 1px solid rgba(239, 211, 155, 0.34);
+  border-radius: 12px;
+  border: 1px solid var(--line-strong);
   color: var(--text);
-  background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0) 43%),
-    rgba(11, 9, 8, 0.98);
+  background: var(--bg-elev);
 }
 
 .app-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.78);
+  background: rgba(0, 0, 0, 0.62);
 }
 
 .dialog-shell {
@@ -1097,8 +1086,8 @@ dialog,
 .pix-timer {
   margin: 0;
   text-align: center;
-  color: #f08e8e;
-  font-weight: 700;
+  color: var(--muted);
+  font-weight: 500;
 }
 
 .toast.is-error {
