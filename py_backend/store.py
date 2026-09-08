@@ -10,6 +10,19 @@ except ImportError:  # Postgres is optional when using the JSON store.
 from .utils import deep_clone
 
 
+COLLECTIONS = (
+    "users",
+    "sessions",
+    "movies",
+    "shares",
+    "listings",
+    "accessTokens",
+    "paymentOrders",
+    "playbackSessions",
+    "transactions",
+)
+
+
 DEFAULT_DB = {
     "users": [],
     "sessions": [],
@@ -127,52 +140,103 @@ class PostgresStore:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    CREATE TABLE IF NOT EXISTS urbe_state (
-                        id integer PRIMARY KEY,
-                        data jsonb NOT NULL,
-                        updated_at timestamptz NOT NULL DEFAULT now()
+                    CREATE TABLE IF NOT EXISTS urbe_docs (
+                        collection text NOT NULL,
+                        id text NOT NULL,
+                        doc jsonb NOT NULL,
+                        PRIMARY KEY (collection, id)
                     )
                     """
                 )
                 cur.execute(
-                    "INSERT INTO urbe_state (id, data) VALUES (1, %s) ON CONFLICT (id) DO NOTHING",
-                    (json.dumps(DEFAULT_DB),),
+                    """
+                    CREATE TABLE IF NOT EXISTS urbe_meta (
+                        key text PRIMARY KEY,
+                        value jsonb NOT NULL
+                    )
+                    """
                 )
-                cur.execute("SELECT data FROM urbe_state WHERE id = 1")
-                row = cur.fetchone()
-                data = row[0] if row else deep_clone(DEFAULT_DB)
-                if isinstance(data, str):
-                    data = json.loads(data)
-                data, changed = normalize_db(data)
-                if changed:
+                cur.execute("CREATE INDEX IF NOT EXISTS urbe_docs_collection_idx ON urbe_docs (collection)")
+                self._migrate_blob_if_needed(cur)
+                cur.execute("SELECT value FROM urbe_meta WHERE key = 'counters'")
+                if cur.fetchone() is None:
                     cur.execute(
-                        "UPDATE urbe_state SET data = %s, updated_at = now() WHERE id = 1",
-                        (json.dumps(data),),
+                        "INSERT INTO urbe_meta (key, value) VALUES ('counters', %s)",
+                        (json.dumps(DEFAULT_DB["counters"]),),
                     )
             conn.commit()
 
-    def _load(self, cur, for_update=False):
-        query = "SELECT data FROM urbe_state WHERE id = 1"
-        if for_update:
-            query += " FOR UPDATE"
-        cur.execute(query)
+    def _migrate_blob_if_needed(self, cur):
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'urbe_state'
+            )
+            """
+        )
+        has_blob = bool(cur.fetchone()[0])
+        cur.execute("SELECT COUNT(*) FROM urbe_docs")
+        docs_count = int(cur.fetchone()[0] or 0)
+        if not has_blob or docs_count:
+            return
+        cur.execute("SELECT data FROM urbe_state WHERE id = 1")
         row = cur.fetchone()
-        data = row[0] if row else deep_clone(DEFAULT_DB)
+        if not row:
+            return
+        data = row[0]
         if isinstance(data, str):
             data = json.loads(data)
-        data, changed = normalize_db(data)
-        return data, changed
+        data, _changed = normalize_db(data)
+        self._write_db(cur, data)
+
+    def _write_db(self, cur, data):
+        data, _changed = normalize_db(data)
+        cur.execute("DELETE FROM urbe_docs")
+        for collection in COLLECTIONS:
+            for item in data.get(collection) or []:
+                item_id = str(item.get("id") or "").strip()
+                if not item_id:
+                    continue
+                cur.execute(
+                    "INSERT INTO urbe_docs (collection, id, doc) VALUES (%s, %s, %s)",
+                    (collection, item_id, json.dumps(item, ensure_ascii=False)),
+                )
+        cur.execute(
+            """
+            INSERT INTO urbe_meta (key, value) VALUES ('counters', %s)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+            """,
+            (json.dumps(data["counters"]),),
+        )
+
+    def _read_db(self, cur):
+        parsed = deep_clone(DEFAULT_DB)
+        cur.execute("SELECT collection, doc FROM urbe_docs")
+        for collection, doc in cur.fetchall():
+            if collection not in parsed:
+                continue
+            if isinstance(doc, str):
+                doc = json.loads(doc)
+            parsed[collection].append(doc)
+        cur.execute("SELECT value FROM urbe_meta WHERE key = 'counters'")
+        row = cur.fetchone()
+        if row:
+            counters = row[0]
+            if isinstance(counters, str):
+                counters = json.loads(counters)
+            parsed["counters"] = counters
+        parsed, _changed = normalize_db(parsed)
+        return parsed
 
     def transaction(self, callback):
         with self._lock:
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    data, _changed = self._load(cur, for_update=True)
+                    cur.execute("LOCK TABLE urbe_docs, urbe_meta IN EXCLUSIVE MODE")
+                    data = self._read_db(cur)
                     result = callback(data)
-                    cur.execute(
-                        "UPDATE urbe_state SET data = %s, updated_at = now() WHERE id = 1",
-                        (json.dumps(data),),
-                    )
+                    self._write_db(cur, data)
                 conn.commit()
                 return deep_clone(result)
 
@@ -180,11 +244,4 @@ class PostgresStore:
         with self._lock:
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    data, changed = self._load(cur, for_update=False)
-                    if changed:
-                        cur.execute(
-                            "UPDATE urbe_state SET data = %s, updated_at = now() WHERE id = 1",
-                            (json.dumps(data),),
-                        )
-                        conn.commit()
-                    return deep_clone(data)
+                    return deep_clone(self._read_db(cur))

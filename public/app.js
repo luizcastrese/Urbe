@@ -1,7 +1,7 @@
 const VIEW_IDS = ["catalog", "market", "portfolio", "publish", "account"];
 
 const state = {
-  sessionToken: localStorage.getItem("urbe_session") || "",
+  sessionToken: "",
   user: null,
   payments: null,
   movies: [],
@@ -347,6 +347,7 @@ async function api(path, { method = "GET", body } = {}) {
     response = await fetch(url, {
       method,
       headers,
+      credentials: "include",
       body: body !== undefined ? JSON.stringify(body) : undefined
     });
   } catch {
@@ -384,6 +385,9 @@ function showView(viewName, { updateHash = true } = {}) {
         ? "Entre para publicar um filme e emitir cotas."
         : "Entre para ver suas cotas, tokens e histórico.";
     nextView = "account";
+  } else if (nextView === "publish" && state.user && !state.user.canPublish) {
+    notify("Publicar exige perfil de produtor.", true);
+    nextView = "catalog";
   }
 
   state.view = nextView;
@@ -409,8 +413,11 @@ function requireAuth(reason) {
 function setSession(token, user) {
   state.sessionToken = token || "";
   state.user = user || null;
-  if (token) localStorage.setItem("urbe_session", token);
-  else localStorage.removeItem("urbe_session");
+  try {
+    localStorage.removeItem("urbe_session");
+  } catch {
+    // ignore
+  }
   renderSession();
 }
 
@@ -420,6 +427,11 @@ function renderSession() {
   refs.logoutBtn.hidden = !loggedIn;
   refs.loginBtn.hidden = loggedIn;
   document.body.classList.toggle("is-authenticated", loggedIn);
+
+  const publishNav = document.querySelector('[data-nav="publish"]');
+  if (publishNav) {
+    publishNav.hidden = Boolean(state.user) && !state.user.canPublish;
+  }
 
   const ownedCount = state.shares.filter((share) => share.state === "owned" || share.state === "listed").length;
   if (loggedIn && ownedCount) {
@@ -775,15 +787,11 @@ async function bootstrapSession() {
   refs.marketGrid.innerHTML = skeletonCards(2);
   showView(currentHashView(), { updateHash: false });
 
-  if (state.sessionToken) {
-    try {
-      const me = await api("/api/auth/me");
-      setSession(state.sessionToken, me.user);
-    } catch {
-      setSession("", null);
-    }
-  } else {
-    renderSession();
+  try {
+    const me = await api("/api/auth/me");
+    setSession(state.sessionToken, me.user);
+  } catch {
+    setSession("", null);
   }
 
   try {

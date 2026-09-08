@@ -301,8 +301,26 @@ class ServiceTestCase(unittest.TestCase):
         pending = self.service.start_primary_checkout(buyer["id"], movie["id"], DelayedGateway())
         self.assertEqual(pending["order"]["status"], "pending")
 
-        confirmed = self.service.confirm_order_payment(pending["order"]["id"])
+        still_open = self.service.confirm_order_payment(pending["order"]["id"], DelayedGateway())
+        self.assertTrue(still_open["pending"])
+        self.assertEqual(still_open["order"]["status"], "pending")
+
+        class PaidGateway(DelayedGateway):
+            def get_checkout_session_status(self, session_id, expected_order):
+                return {
+                    "provider": "mock",
+                    "sessionId": session_id,
+                    "paid": True,
+                    "amountCents": expected_order["amountCents"],
+                    "currency": expected_order["currency"],
+                    "paymentStatus": "paid",
+                    "status": "complete",
+                    "raw": {"mode": "paid"},
+                }
+
+        confirmed = self.service.confirm_order_payment(pending["order"]["id"], PaidGateway())
         self.assertFalse(confirmed["alreadyPaid"])
+        self.assertFalse(confirmed["pending"])
         self.assertEqual(confirmed["order"]["status"], "paid")
         self.assertEqual(confirmed["purchase"]["token"]["status"], "active")
 
@@ -310,7 +328,7 @@ class ServiceTestCase(unittest.TestCase):
         self.assertEqual(share["tokenState"]["code"], "ready")
         self.assertTrue(share["tokenState"]["canWatch"])
 
-        again = self.service.confirm_order_payment(pending["order"]["id"])
+        again = self.service.confirm_order_payment(pending["order"]["id"], PaidGateway())
         self.assertTrue(again["alreadyPaid"])
     def test_checkout_primario_mock_finaliza_compra(self):
         producer = self.service.register_user(
@@ -418,6 +436,126 @@ class ServiceTestCase(unittest.TestCase):
 
         with self.assertRaises(AppError):
             self.service.consume_access_token(seller["id"], first_purchase["token"]["token"])
+
+    def test_compra_direta_bloqueada_fora_do_mock(self):
+        self.service.config.allow_free_buy = False
+        producer = self.service.register_user(
+            {"name": "Produtor", "email": "nobuy-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        buyer = self.service.register_user(
+            {"name": "Cliente", "email": "nobuy-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Bloqueado", bunny_video_id="video-guid-nobuy")
+        with self.assertRaises(AppError) as error:
+            self.service.buy_primary_share(buyer["id"], movie["id"])
+        self.assertEqual(error.exception.code, "PAYMENTS_REQUIRED")
+
+    def test_membro_nao_publica_sem_papel_de_produtor(self):
+        self.service.config.open_publish = False
+        member = self.service.register_user(
+            {"name": "Membro", "email": "membro@urbe.test", "password": "123456"}
+        )["user"]
+        self.assertFalse(member["canPublish"])
+        with self.assertRaises(AppError) as error:
+            self._create_movie(member["id"], title="Filme Recusado", bunny_video_id="video-guid-nopub")
+        self.assertEqual(error.exception.code, "PRODUCER_REQUIRED")
+
+        invited = self.service.register_user(
+            {
+                "name": "Estudio",
+                "email": "estudio@urbe.test",
+                "password": "123456",
+                "producerInvite": "convite-secreto",
+            }
+        )["user"]
+        self.assertFalse(invited["canPublish"])
+
+        self.service.config.producer_invite = "convite-secreto"
+        producer = self.service.register_user(
+            {
+                "name": "Estudio 2",
+                "email": "estudio2@urbe.test",
+                "password": "123456",
+                "producerInvite": "convite-secreto",
+            }
+        )["user"]
+        self.assertEqual(producer["role"], "producer")
+        self.assertTrue(producer["canPublish"])
+        movie = self._create_movie(producer["id"], title="Filme Autorizado", bunny_video_id="video-guid-pub")
+        self.assertEqual(movie["title"], "Filme Autorizado")
+
+    def test_embed_nao_assinado_restaura_token(self):
+        self.service.config.require_signed_embed = True
+        producer = self.service.register_user(
+            {"name": "Produtor Sign", "email": "sign-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        viewer = self.service.register_user(
+            {"name": "Cliente Sign", "email": "sign-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Sign", bunny_video_id="video-guid-sign")
+        purchase = self.service.buy_primary_share(viewer["id"], movie["id"])
+        consumed = self.service.consume_access_token(viewer["id"], purchase["token"]["token"])
+
+        with self.assertRaises(AppError) as error:
+            self.service.open_playback_session(
+                consumed["playback"]["watchToken"],
+                {
+                    "clientSecret": consumed["playback"]["clientSecret"],
+                    "ipAddress": "127.0.0.1",
+                    "userAgent": "test",
+                },
+                lambda info: {
+                    "embedUrl": f"https://iframe.mediadelivery.net/embed/{info['libraryId']}/{info['videoId']}",
+                    "expiresAt": "2099-01-01T00:00:00Z",
+                    "signed": False,
+                },
+            )
+        self.assertEqual(error.exception.code, "BUNNY_EMBED_UNSIGNED")
+        restored = self.service.get_user_shares(viewer["id"])[0]
+        self.assertEqual(restored["accessToken"]["status"], "active")
+        self.assertEqual(restored["tokenState"]["code"], "ready")
+
+    def test_webhook_recusa_valor_divergente(self):
+        producer = self.service.register_user(
+            {"name": "Produtor Valor", "email": "valor-produtor@urbe.test", "password": "123456"}
+        )["user"]
+        buyer = self.service.register_user(
+            {"name": "Cliente Valor", "email": "valor-cliente@urbe.test", "password": "123456"}
+        )["user"]
+        movie = self._create_movie(producer["id"], title="Filme Valor", bunny_video_id="video-guid-valor")
+
+        class DelayedGateway:
+            provider = "mock"
+
+            def create_checkout_session(self, order, description, buyer, success_url, cancel_url):
+                return {
+                    "provider": "mock",
+                    "sessionId": f"sess_{order['id']}",
+                    "checkoutUrl": "https://checkout.mock/session",
+                    "paid": False,
+                    "amountCents": order["amountCents"],
+                    "currency": order["currency"],
+                    "paymentStatus": "unpaid",
+                    "status": "open",
+                    "raw": {},
+                }
+
+            def get_checkout_session_status(self, session_id, expected_order):
+                return {
+                    "provider": "mock",
+                    "sessionId": session_id,
+                    "paid": True,
+                    "amountCents": expected_order["amountCents"] + 1,
+                    "currency": expected_order["currency"],
+                    "paymentStatus": "paid",
+                    "status": "complete",
+                    "raw": {},
+                }
+
+        pending = self.service.start_primary_checkout(buyer["id"], movie["id"], DelayedGateway())
+        with self.assertRaises(AppError) as error:
+            self.service.confirm_order_payment(pending["order"]["id"], DelayedGateway())
+        self.assertEqual(error.exception.code, "AMOUNT_MISMATCH")
 
 
 if __name__ == "__main__":

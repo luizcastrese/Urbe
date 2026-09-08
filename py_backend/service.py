@@ -3,6 +3,8 @@ import re
 from copy import deepcopy
 from urllib.parse import urlparse
 
+import hmac
+
 from .errors import AppError
 from .utils import ensure_positive_int, hash_password, now_iso, random_token, verify_password
 
@@ -416,6 +418,31 @@ class UrbeService:
         self.store = store
         self.config = config
 
+    def _can_publish(self, user):
+        if getattr(self.config, "open_publish", True):
+            return True
+        return str((user or {}).get("role") or "") == "producer"
+
+    def _wants_producer(self, email, payload=None):
+        email = str(email or "").strip().lower()
+        allowed = {item.strip().lower() for item in (getattr(self.config, "producer_emails", ()) or ()) if item}
+        if email and email in allowed:
+            return True
+        expected = str(getattr(self.config, "producer_invite", "") or "").strip()
+        given = str((payload or {}).get("producerInvite") or (payload or {}).get("invite") or "").strip()
+        if not expected or not given or len(expected) != len(given):
+            return False
+        return hmac.compare_digest(expected, given)
+
+    def _public_user(self, user):
+        payload = sanitize_user(user)
+        payload["canPublish"] = self._can_publish(user)
+        return payload
+
+    def _assert_free_buy_allowed(self):
+        if not getattr(self.config, "allow_free_buy", True):
+            raise AppError("Compra direta desativada. Use o checkout com pagamento.", 403, "PAYMENTS_REQUIRED")
+
     def register_user(self, payload):
         normalized_email = normalize_email(payload.get("email"))
         normalized_name = str(payload.get("name") or "").strip()
@@ -436,7 +463,7 @@ class UrbeService:
                 "id": next_id(db, "user", "usr"),
                 "name": normalized_name,
                 "email": normalized_email,
-                "role": "member",
+                "role": "producer" if self._wants_producer(normalized_email, payload) else "member",
                 "passwordHash": hash_password(payload.get("password")),
                 "createdAt": now,
             }
@@ -444,7 +471,7 @@ class UrbeService:
 
             session = self._create_session(db, user["id"], now)
             return {
-                "user": sanitize_user(user),
+                "user": self._public_user(user),
                 "sessionToken": session["token"],
                 "expiresAt": session["expiresAt"],
             }
@@ -460,9 +487,12 @@ class UrbeService:
             if not user or not verify_password(payload.get("password") or "", user.get("passwordHash")):
                 raise AppError("Credenciais invalidas.", 401, "INVALID_CREDENTIALS")
 
+            if self._wants_producer(user.get("email"), payload) and user.get("role") != "producer":
+                user["role"] = "producer"
+
             session = self._create_session(db, user["id"], now_iso())
             return {
-                "user": sanitize_user(user),
+                "user": self._public_user(user),
                 "sessionToken": session["token"],
                 "expiresAt": session["expiresAt"],
             }
@@ -501,7 +531,7 @@ class UrbeService:
         if not user:
             return None
 
-        return sanitize_user(user)
+        return self._public_user(user)
 
     def list_movies(self):
         def tx(db):
@@ -586,6 +616,8 @@ class UrbeService:
             user = next((item for item in db["users"] if item["id"] == user_id), None)
             if not user:
                 raise AppError("Usuario nao encontrado.", 404, "USER_NOT_FOUND")
+            if not self._can_publish(user):
+                raise AppError("Somente produtores podem publicar filmes.", 403, "PRODUCER_REQUIRED")
 
             now = now_iso()
             movie = {
@@ -636,6 +668,7 @@ class UrbeService:
             "provider": self.config.payments.provider,
             "currency": self.config.payments.currency,
             "checkoutReservationMinutes": self.config.checkout_reservation_minutes,
+            "openPublish": bool(getattr(self.config, "open_publish", True)),
         }
 
     def get_bunny_status(self):
@@ -972,6 +1005,7 @@ class UrbeService:
         return self.store.transaction(tx)
 
     def buy_primary_share(self, user_id, movie_id):
+        self._assert_free_buy_allowed()
         def tx(db):
             self._cleanup_expired_reservations(db)
             buyer = next((item for item in db["users"] if item["id"] == user_id), None)
@@ -1190,6 +1224,7 @@ class UrbeService:
         return self.store.transaction(tx)
 
     def buy_listing(self, user_id, listing_id):
+        self._assert_free_buy_allowed()
         def tx(db):
             self._cleanup_expired_reservations(db)
             buyer = next((item for item in db["users"] if item["id"] == user_id), None)
@@ -1419,6 +1454,16 @@ class UrbeService:
                     }
                 return {"_playbackError": AppError(message, 502, "BUNNY_EMBED_FAILED")}
 
+            if getattr(self.config, "require_signed_embed", False) and not embed.get("signed"):
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                return {
+                    "_playbackError": AppError(
+                        "Player Bunny sem assinatura. Seu token nao foi gasto.",
+                        503,
+                        "BUNNY_EMBED_UNSIGNED",
+                    )
+                }
+
             now = now_iso()
             session["status"] = "used"
             session["consumedAt"] = now
@@ -1447,41 +1492,58 @@ class UrbeService:
             raise error
         return result
 
-    def confirm_order_payment(self, correlation_id):
+    def confirm_order_payment(self, correlation_id, payment_gateway):
         correlation_id = str(correlation_id or "").strip()
         if not correlation_id:
             raise AppError("correlationID ausente.", 400, "VALIDATION_ERROR")
+        if payment_gateway is None:
+            raise AppError("Gateway de pagamento ausente.", 500, "PAYMENTS_NOT_CONFIGURED")
+
+        snapshot = self.store.snapshot()
+        order = self._order_by_correlation(snapshot, correlation_id)
+        if not order:
+            raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
+        if order.get("status") == "paid":
+            return {"alreadyPaid": True, "pending": False, "order": self._public_order(order), "purchase": None}
+        if order.get("status") != "pending":
+            raise AppError("Somente ordens pendentes podem ser confirmadas.", 409, "ORDER_NOT_PENDING")
+
+        session_id = order.get("providerSessionId") or order.get("id")
+        checkout = payment_gateway.get_checkout_session_status(session_id, order)
+        if not checkout.get("paid"):
+            return {
+                "alreadyPaid": False,
+                "pending": True,
+                "order": self._public_order(order),
+                "purchase": None,
+            }
+
+        self._assert_paid_amount_matches_order(order, checkout)
 
         def tx(db):
             self._cleanup_expired_reservations(db)
-            order = next(
-                (
-                    item
-                    for item in db["paymentOrders"]
-                    if item.get("id") == correlation_id or item.get("providerSessionId") == correlation_id
-                ),
-                None,
-            )
-            if not order:
+            live = self._order_by_correlation(db, correlation_id)
+            if not live:
                 raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
-            if order.get("status") == "paid":
-                return {"alreadyPaid": True, "order": self._public_order(order), "purchase": None}
-            if order.get("status") != "pending":
+            if live.get("status") == "paid":
+                return {"alreadyPaid": True, "pending": False, "order": self._public_order(live), "purchase": None}
+            if live.get("status") != "pending":
                 raise AppError("Somente ordens pendentes podem ser confirmadas.", 409, "ORDER_NOT_PENDING")
-
-            checkout = {
-                "provider": order.get("provider"),
-                "sessionId": order.get("providerSessionId") or order.get("id"),
-                "paid": True,
-                "amountCents": order.get("amountCents"),
-                "currency": order.get("currency"),
-                "paymentStatus": "paid",
-                "status": "complete",
-            }
-            purchase = self._finalize_paid_order(db, order, checkout)
-            return {"alreadyPaid": False, "order": self._public_order(order), "purchase": purchase}
+            self._assert_paid_amount_matches_order(live, checkout)
+            purchase = self._finalize_paid_order(db, live, checkout)
+            return {"alreadyPaid": False, "pending": False, "order": self._public_order(live), "purchase": purchase}
 
         return self.store.transaction(tx)
+
+    def _order_by_correlation(self, db, correlation_id):
+        return next(
+            (
+                item
+                for item in db["paymentOrders"]
+                if item.get("id") == correlation_id or item.get("providerSessionId") == correlation_id
+            ),
+            None,
+        )
 
     def _listings_for_movie(self, db, movie_id):
         return [
@@ -1563,7 +1625,9 @@ class UrbeService:
 
     def _assert_paid_amount_matches_order(self, order, checkout):
         paid_amount = checkout.get("amountCents")
-        if paid_amount is not None and int(paid_amount) != int(order.get("amountCents") or 0):
+        if paid_amount is None:
+            raise AppError("Provedor nao informou o valor pago.", 502, "AMOUNT_MISSING")
+        if int(paid_amount) != int(order.get("amountCents") or 0):
             raise AppError("Valor pago diverge da ordem.", 409, "AMOUNT_MISMATCH")
         currency = checkout.get("currency")
         if currency and str(currency).upper() != str(order.get("currency") or "").upper():

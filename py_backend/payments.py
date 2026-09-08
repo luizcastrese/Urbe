@@ -116,20 +116,36 @@ class OpenPixPaymentGateway:
     def get_checkout_session_status(self, session_id, expected_order):
         status, raw_text = self._request("GET", f"/charge/{session_id}")
         parsed = json.loads(raw_text) if raw_text else {}
-        charge = parsed.get("charge", {})
+        charge = parsed.get("charge", {}) if isinstance(parsed, dict) else {}
         paid_status = str(charge.get("status") or "").upper()
-        paid = paid_status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
+        paid = status < 300 and paid_status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
+        amount_cents = _charge_amount_cents(charge)
+        currency = str(charge.get("currency") or self.currency or "BRL").upper()
 
         return {
             "provider": self.provider,
             "sessionId": session_id,
             "paid": paid,
-            "amountCents": expected_order["amountCents"],
-            "currency": self.currency,
+            "amountCents": amount_cents,
+            "currency": currency,
             "paymentStatus": "paid" if paid else "pending",
             "status": "complete" if paid else "pending",
             "raw": parsed,
         }
+
+
+def _charge_amount_cents(charge):
+    raw = None
+    if isinstance(charge, dict):
+        raw = charge.get("value")
+        if raw is None:
+            raw = charge.get("amount")
+    try:
+        if raw is None:
+            return None
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def create_payment_gateway(payments_config):
