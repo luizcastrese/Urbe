@@ -1,0 +1,6 @@
+data/
+py_backend/__pycache__/
+**/__pycache__/
+*.pyc
+.env
+*.tmp

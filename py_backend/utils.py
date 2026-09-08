@@ -4,6 +4,8 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
+import time
 import urllib.parse
 
 from .errors import AppError
@@ -71,6 +73,14 @@ def read_json_bytes(raw_bytes):
         raise AppError("JSON invalido.", 400, "INVALID_JSON")
 
 
+def get_session_token(headers):
+    bearer = get_bearer_token(headers)
+    if bearer:
+        return bearer
+    cookies = parse_cookies(headers.get("Cookie") if headers else "")
+    return cookies.get("urbe_auth") or None
+
+
 def get_bearer_token(headers):
     auth_header = headers.get("Authorization", "")
     parts = auth_header.split(" ", 1)
@@ -96,7 +106,7 @@ def parse_cookies(cookie_header):
     return cookies
 
 
-def build_cookie(name, value, path="/", max_age=None, same_site="Strict", http_only=True):
+def build_cookie(name, value, path="/", max_age=None, same_site="Strict", http_only=True, secure=False):
     segments = [
         f"{urllib.parse.quote(str(name))}={urllib.parse.quote(str(value))}",
         f"Path={path}",
@@ -106,7 +116,28 @@ def build_cookie(name, value, path="/", max_age=None, same_site="Strict", http_o
         segments.append(f"Max-Age={max(0, int(max_age))}")
     if http_only:
         segments.append("HttpOnly")
+    if secure:
+        segments.append("Secure")
     return "; ".join(segments)
+
+
+class RateLimiter:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._hits = {}
+
+    def allow(self, key, limit, window_seconds):
+        now = time.time()
+        window = max(1, int(window_seconds or 1))
+        cap = max(1, int(limit or 1))
+        with self._lock:
+            stamps = [stamp for stamp in self._hits.get(key, []) if now - stamp < window]
+            if len(stamps) >= cap:
+                self._hits[key] = stamps
+                return False
+            stamps.append(now)
+            self._hits[key] = stamps
+            return True
 
 
 def fill_template(template, values):

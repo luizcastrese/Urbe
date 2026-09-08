@@ -7,13 +7,26 @@ import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .bunny import build_signed_embed_url, create_bunny_video
-from .config import load_config
+from .bunny import (
+    build_signed_embed_url,
+    create_bunny_video,
+    fetch_bunny_video,
+    lookup_bunny_video,
+    public_bunny_video,
+)
+from .config import assert_runtime_ready, load_config
 from .errors import AppError
 from .payments import create_payment_gateway
 from .service import UrbeService
 from .store import JsonStore, PostgresStore
-from .utils import build_cookie, get_bearer_token, parse_cookies, read_json_bytes, verify_openpix_signature
+from .utils import (
+    RateLimiter,
+    build_cookie,
+    get_session_token,
+    parse_cookies,
+    read_json_bytes,
+    verify_openpix_signature,
+)
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(PACKAGE_DIR, os.pardir))
@@ -23,17 +36,90 @@ CONFIG = load_config()
 STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
 SERVICE = UrbeService(STORE, CONFIG)
 PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
+AUTH_LIMITER = RateLimiter()
 
-def get_cors_headers():
-    return {
-        "Access-Control-Allow-Origin": "*",
+
+def client_ip(handler):
+    forwarded = handler.headers.get("X-Forwarded-For", "") if handler.headers else ""
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if handler.client_address:
+        return handler.client_address[0]
+    return "unknown"
+
+
+def get_cors_headers(request_origin=""):
+    origin = str(request_origin or "").strip()
+    allowed = {item.rstrip("/") for item in (CONFIG.app_origins or ())}
+    headers = {
         "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
         "Access-Control-Max-Age": "86400",
+        "Vary": "Origin",
     }
+    allow_origin = None
+    if origin and origin.rstrip("/") in allowed:
+        allow_origin = origin
+    elif origin and not CONFIG.is_production:
+        host = urllib.parse.urlparse(origin).hostname
+        if host in {"localhost", "127.0.0.1"}:
+            allow_origin = origin
+    if allow_origin:
+        headers["Access-Control-Allow-Origin"] = allow_origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return headers
 
-def render_watch_error_page(message):
+
+def lookup_configured_bunny_video(library_id, video_id):
+    return lookup_bunny_video(CONFIG.bunny.api_key, library_id, video_id)
+
+
+def watch_token_copy(code):
+    if code == "PLAYBACK_USED":
+        return "Esta visualizacao unica ja foi usada. O token esta gasto."
+    if code == "PLAYBACK_FORBIDDEN":
+        return "O token continua em sessao neste navegador. Volte para Minhas cotas e toque em Continuar."
+    if code in {
+        "PLAYBACK_EXPIRED",
+        "BUNNY_EMBED_FAILED",
+        "INVALID_BUNNY_IDENTIFIERS",
+        "BUNNY_VIDEO_NOT_FOUND",
+        "BUNNY_NOT_READY",
+        "BUNNY_LOOKUP_FAILED",
+    }:
+        return "Seu token de visualizacao nao foi gasto. A cota continua pronta para assistir."
+    return "Se a sessao Bunny nao chegou a abrir, o token nao foi gasto."
+
+
+def watch_post_message_script(payload):
+    raw = json.dumps(payload, ensure_ascii=True)
+    return f"""
+    <script>
+      (function () {{
+        var payload = {raw};
+        try {{
+          if (window.parent && window.parent !== window) {{
+            window.parent.postMessage(payload, window.location.origin);
+          }}
+        }} catch (error) {{}}
+      }})();
+    </script>
+    """
+
+
+def render_watch_error_page(message, code=""):
     safe = html.escape(str(message or "Falha ao abrir reproducao."))
+    token_line = html.escape(watch_token_copy(code))
+    token_spent = code == "PLAYBACK_USED"
+    script = watch_post_message_script(
+        {
+            "source": "urbe-watch",
+            "ok": False,
+            "tokenSpent": token_spent,
+            "code": code or "",
+            "message": str(message or ""),
+        }
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
   <head>
@@ -54,30 +140,55 @@ def render_watch_error_page(message):
         background: rgba(255, 255, 255, 0.04);
         border: 1px solid rgba(255, 255, 255, 0.14);
         border-radius: 12px;
-        padding: 1rem 1.2rem;
+        padding: 1.1rem 1.2rem;
         max-width: 520px;
       }}
-      p {{ margin: 0; color: #cfd8e6; }}
+      p {{ margin: 0.35rem 0 0; color: #cfd8e6; line-height: 1.5; }}
+      strong {{ color: #ffe8bf; }}
     </style>
   </head>
   <body>
     <main>
-      <p>{{safe}}</p>
+      <strong>Player Bunny indisponivel</strong>
+      <p>{safe}</p>
+      <p>{token_line}</p>
     </main>
+    {script}
   </body>
 </html>"""
 
 def render_watch_page(title, embed_url):
     safe_title = html.escape(str(title or "Urbe"))
     safe_embed = html.escape(str(embed_url or ""))
+    script = watch_post_message_script(
+        {
+            "source": "urbe-watch",
+            "ok": True,
+            "tokenSpent": True,
+            "code": "PLAYBACK_OPEN",
+            "message": "Sessao Bunny aberta. Token usado.",
+        }
+    )
     return f"""<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{{safe_title}} | Urbe</title>
+    <title>{safe_title} | Urbe</title>
     <style>
-      body {{ margin: 0; background: #000; }}
+      body {{ margin: 0; background: #000; color: #f7f1e5; font-family: system-ui, sans-serif; }}
+      .watch-banner {{
+        position: absolute;
+        left: 0.8rem;
+        top: 0.8rem;
+        z-index: 2;
+        padding: 0.35rem 0.6rem;
+        border-radius: 999px;
+        background: rgba(11, 9, 8, 0.72);
+        font-size: 0.75rem;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }}
       iframe {{
         border: 0;
         width: 100vw;
@@ -86,12 +197,14 @@ def render_watch_page(title, embed_url):
     </style>
   </head>
   <body>
+    <div class="watch-banner">Sessao unica · token usado ao abrir</div>
     <iframe
-      src="{{safe_embed}}"
-      title="{{safe_title}}"
+      src="{safe_embed}"
+      title="{safe_title}"
       allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
       allowfullscreen
     ></iframe>
+    {script}
   </body>
 </html>"""
 
@@ -124,7 +237,6 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/movies$"), "auth": False, "handler": "api_movies_list"},
         {"method": "GET", "pattern": re.compile(r"^/api/movies/([^/]+)$"), "auth": False, "handler": "api_movies_get"},
         {"method": "POST", "pattern": re.compile(r"^/api/movies$"), "auth": True, "handler": "api_movies_create"},
-        {"method": "POST", "pattern": re.compile(r"^/api/movies/([^/]+)/buy$"), "auth": True, "handler": "api_movies_buy"},
         {
             "method": "POST",
             "pattern": re.compile(r"^/api/payments/primary/([^/]+)/checkout$"),
@@ -134,7 +246,6 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/listings$"), "auth": False, "handler": "api_listings_list"},
         {"method": "POST", "pattern": re.compile(r"^/api/shares/([^/]+)/listings$"), "auth": True, "handler": "api_shares_create_listing"},
         {"method": "POST", "pattern": re.compile(r"^/api/listings/([^/]+)/cancel$"), "auth": True, "handler": "api_listings_cancel"},
-        {"method": "POST", "pattern": re.compile(r"^/api/listings/([^/]+)/buy$"), "auth": True, "handler": "api_listings_buy"},
         {
             "method": "POST",
             "pattern": re.compile(r"^/api/payments/listings/([^/]+)/checkout$"),
@@ -156,8 +267,10 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "GET", "pattern": re.compile(r"^/api/me/shares$"), "auth": True, "handler": "api_me_shares"},
         {"method": "GET", "pattern": re.compile(r"^/api/me/orders$"), "auth": True, "handler": "api_me_orders"},
         {"method": "GET", "pattern": re.compile(r"^/api/me/transactions$"), "auth": True, "handler": "api_me_transactions"},
-        {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
+        {"method": "GET", "pattern": re.compile(r"^/api/bunny/status$"), "auth": False, "handler": "api_bunny_status"},
         {"method": "POST", "pattern": re.compile(r"^/api/bunny/videos$"), "auth": True, "handler": "api_bunny_create_video"},
+        {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
+        {"method": "POST", "pattern": re.compile(r"^/api/access/resume$"), "auth": True, "handler": "api_access_resume"},
         # === NOVA ROTA DO WEBHOOK OPENPIX ===
         {
             "method": "POST",
@@ -174,7 +287,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         if self.path.startswith("/api/"):
             self.send_response(204)
-            for key, value in get_cors_headers().items():
+            for key, value in get_cors_headers(self.headers.get("Origin")).items():
                 self.send_header(key, value)
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -230,7 +343,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return read_json_bytes(raw), raw
 
     def _handle_api(self, method, path, parsed_url):
-        cors_headers = get_cors_headers()
+        cors_headers = get_cors_headers(self.headers.get("Origin"))
 
         for route in self.routes:
             if route["method"] != method:
@@ -246,11 +359,21 @@ class UrbeHandler(BaseHTTPRequestHandler):
                     body, raw_body = {}, b""
                 session_token = None
                 user = None
+                if route["handler"] in {"api_auth_register", "api_auth_login"}:
+                    ip = client_ip(self)
+                    if not AUTH_LIMITER.allow(
+                        f"{route['handler']}:{ip}",
+                        CONFIG.auth_rate_limit,
+                        CONFIG.auth_rate_window_seconds,
+                    ):
+                        raise AppError("Muitas tentativas. Espere alguns minutos.", 429, "RATE_LIMITED")
+                session_token = get_session_token(self.headers)
                 if route["auth"]:
-                    session_token = get_bearer_token(self.headers)
                     user = SERVICE.get_user_by_session(session_token)
                     if not user:
                         raise AppError("Nao autenticado.", 401, "UNAUTHORIZED")
+                elif session_token:
+                    user = SERVICE.get_user_by_session(session_token)
 
                 query_params = urllib.parse.parse_qs(parsed_url.query)
                 context = {
@@ -279,10 +402,22 @@ class UrbeHandler(BaseHTTPRequestHandler):
 
     def _handle_watch(self, path):
         match = re.match(r"^/watch/([^/]+)$", path)
-        clear_cookie = build_cookie("urbe_playback", "", path="/watch", max_age=0, same_site="Strict", http_only=True)
+        clear_cookie = build_cookie(
+            "urbe_playback",
+            "",
+            path="/watch",
+            max_age=0,
+            same_site="Strict",
+            http_only=True,
+            secure=CONFIG.cookie_secure,
+        )
 
         if not match:
-            self._send_html(404, render_watch_error_page("Link de reproducao invalido."), {"Set-Cookie": clear_cookie})
+            self._send_html(
+                404,
+                render_watch_error_page("Link de reproducao invalido.", "PLAYBACK_NOT_FOUND"),
+                {"Set-Cookie": clear_cookie},
+            )
             return
 
         playback_token = match.group(1)
@@ -305,6 +440,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
                     expires_in_seconds=90,
                     session_tag=info.get("sessionTag", ""),
                 ),
+                bunny_lookup=lookup_configured_bunny_video,
             )
             page = render_watch_page(result["movie"]["title"], result["playback"]["embedUrl"])
             self._send_html(
@@ -319,7 +455,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         except AppError as error:
             self._send_html(
                 error.status,
-                render_watch_error_page(error.message),
+                render_watch_error_page(error.message, error.code),
                 {
                     "Cache-Control": "no-store",
                     "Set-Cookie": clear_cookie,
@@ -330,7 +466,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
             print("Unhandled watch error:", error)
             self._send_html(
                 500,
-                render_watch_error_page("Falha ao abrir reproducao."),
+                render_watch_error_page("Falha ao abrir reproducao.", "INTERNAL_ERROR"),
                 {
                     "Cache-Control": "no-store",
                     "Set-Cookie": clear_cookie,
@@ -362,7 +498,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        for key, value in (headers or {}).items():
+        for key, value in self._flatten_headers(headers):
             self.send_header(key, str(value))
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
@@ -372,11 +508,35 @@ class UrbeHandler(BaseHTTPRequestHandler):
         body_bytes = html_text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        for key, value in (headers or {}).items():
+        for key, value in self._flatten_headers(headers):
             self.send_header(key, str(value))
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
         self.wfile.write(body_bytes)
+
+    def _flatten_headers(self, headers):
+        items = []
+        for key, value in (headers or {}).items():
+            if isinstance(value, (list, tuple)):
+                items.extend((key, item) for item in value)
+            else:
+                items.append((key, value))
+        return items
+
+    def _session_cookie(self, token="", clear=False):
+        max_age = 0 if clear or not token else int(CONFIG.session_duration_days or 30) * 86400
+        return build_cookie(
+            "urbe_auth",
+            "" if clear else token,
+            path="/",
+            max_age=max_age,
+            same_site="Lax",
+            http_only=True,
+            secure=CONFIG.cookie_secure,
+        )
+
+    def _auth_headers(self, result):
+        return {"Set-Cookie": self._session_cookie(result.get("sessionToken") or "")}
 
     # API handlers
     def api_health(self, _ctx):
@@ -399,7 +559,9 @@ class UrbeHandler(BaseHTTPRequestHandler):
             correlation_id = body.get("data", {}).get("correlationID")
             if correlation_id:
                 try:
-                    SERVICE.confirm_order_payment(correlation_id)
+                    result = SERVICE.confirm_order_payment(correlation_id, PAYMENT_GATEWAY)
+                    if result.get("pending"):
+                        return 200, {"status": "pending"}, {}
                     return 200, {"status": "ok"}, {}
                 except Exception as e:
                     print(f"Erro no webhook OpenPix: {e}")
@@ -414,15 +576,15 @@ class UrbeHandler(BaseHTTPRequestHandler):
 
     def api_auth_register(self, ctx):
         result = SERVICE.register_user(ctx["body"])
-        return 201, result, {}
+        return 201, result, self._auth_headers(result)
 
     def api_auth_login(self, ctx):
         result = SERVICE.login(ctx["body"])
-        return 200, result, {}
+        return 200, result, self._auth_headers(result)
 
     def api_auth_logout(self, ctx):
         result = SERVICE.logout(ctx["sessionToken"])
-        return 200, result, {}
+        return 200, result, {"Set-Cookie": self._session_cookie(clear=True)}
 
     def api_auth_me(self, ctx):
         return 200, {"user": ctx["user"]}, {}
@@ -434,12 +596,17 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return 200, {"movie": SERVICE.get_movie(movie_id)}, {}
 
     def api_movies_create(self, ctx):
-        movie = SERVICE.create_movie(ctx["user"]["id"], ctx["body"])
+        body = dict(ctx["body"] or {})
+        video_id = str(body.get("bunnyVideoId") or "").strip()
+        library_id = str(body.get("bunnyLibraryId") or CONFIG.bunny.default_library_id or "").strip()
+        if CONFIG.require_bunny_lookup:
+            if not video_id or not library_id:
+                raise AppError("Informe o ID do video e a biblioteca Bunny.", 400, "VALIDATION_ERROR")
+            bunny_video = fetch_bunny_video(CONFIG.bunny.api_key, library_id, video_id)
+            if not bunny_video:
+                raise AppError("Nao foi possivel validar o video na Bunny.", 400, "BUNNY_LOOKUP_FAILED")
+        movie = SERVICE.create_movie(ctx["user"]["id"], body)
         return 201, {"movie": movie}, {}
-
-    def api_movies_buy(self, ctx, movie_id):
-        purchase = SERVICE.buy_primary_share(ctx["user"]["id"], movie_id)
-        return 201, purchase, {}
 
     def api_payments_primary_checkout(self, ctx, movie_id):
         result = SERVICE.start_primary_checkout(ctx["user"]["id"], movie_id, PAYMENT_GATEWAY)
@@ -457,10 +624,6 @@ class UrbeHandler(BaseHTTPRequestHandler):
     def api_listings_cancel(self, ctx, listing_id):
         listing = SERVICE.cancel_listing(ctx["user"]["id"], listing_id)
         return 200, {"listing": listing}, {}
-
-    def api_listings_buy(self, ctx, listing_id):
-        purchase = SERVICE.buy_listing(ctx["user"]["id"], listing_id)
-        return 201, purchase, {}
 
     def api_payments_listing_checkout(self, ctx, listing_id):
         result = SERVICE.start_listing_checkout(ctx["user"]["id"], listing_id, PAYMENT_GATEWAY)
@@ -485,12 +648,26 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return 200, {"transactions": SERVICE.get_user_transactions(ctx["user"]["id"])}, {}
 
     def api_access_consume(self, ctx):
-        payload = SERVICE.consume_access_token(ctx["user"]["id"], str(ctx["body"].get("token") or ""))
+        payload = SERVICE.consume_access_token(
+            ctx["user"]["id"],
+            str(ctx["body"].get("token") or ""),
+            bunny_lookup=lookup_configured_bunny_video,
+        )
+        return 200, payload, self._playback_headers(payload)
+
+    def api_access_resume(self, ctx):
+        payload = SERVICE.resume_playback(
+            ctx["user"]["id"],
+            token_value=str(ctx["body"].get("token") or ""),
+            share_id=str(ctx["body"].get("shareId") or ""),
+        )
+        return 200, payload, self._playback_headers(payload)
+
+    def _playback_headers(self, payload):
         playback = payload.get("playback") or {}
         playback_secret = playback.get("clientSecret", "")
         if "clientSecret" in playback:
             del playback["clientSecret"]
-
         headers = {"Cache-Control": "no-store"}
         if playback_secret:
             headers["Set-Cookie"] = build_cookie(
@@ -500,22 +677,30 @@ class UrbeHandler(BaseHTTPRequestHandler):
                 max_age=CONFIG.playback_session_seconds,
                 same_site="Strict",
                 http_only=True,
+                secure=CONFIG.cookie_secure,
             )
+        return headers
 
-        return 200, payload, headers
+    def api_bunny_status(self, _ctx):
+        return 200, {"bunny": SERVICE.get_bunny_status()}, {}
 
     def api_bunny_create_video(self, ctx):
+        if not SERVICE._can_publish(ctx["user"]):
+            raise AppError("Somente produtores podem criar video na Bunny.", 403, "PRODUCER_REQUIRED")
+        library_id = str(ctx["body"].get("libraryId") or CONFIG.bunny.default_library_id or "")
         bunny_video = create_bunny_video(
             api_key=CONFIG.bunny.api_key,
-            library_id=str(ctx["body"].get("libraryId") or CONFIG.bunny.default_library_id or ""),
+            library_id=library_id,
             title=ctx["body"].get("title"),
             collection_id=ctx["body"].get("collectionId"),
             thumbnail_time=ctx["body"].get("thumbnailTime"),
         )
-        return 201, {"bunnyVideo": bunny_video}, {}
+        public_video = public_bunny_video(bunny_video, library_id)
+        return 201, {"bunnyVideo": bunny_video, **public_video}, {}
 
 
 def run():
+    assert_runtime_ready(CONFIG)
     server = ThreadingHTTPServer(("0.0.0.0", CONFIG.port), UrbeHandler)
     print(f"Urbe disponivel em http://localhost:{CONFIG.port}")
     server.serve_forever()

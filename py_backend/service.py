@@ -3,6 +3,8 @@ import re
 from copy import deepcopy
 from urllib.parse import urlparse
 
+import hmac
+
 from .errors import AppError
 from .utils import ensure_positive_int, hash_password, now_iso, random_token, verify_password
 
@@ -219,6 +221,171 @@ def compact_movie_for_listing(movie):
     }
 
 
+def public_access_token(token):
+    if not token:
+        return None
+    payload = {
+        "id": token.get("id"),
+        "status": token.get("status"),
+        "reason": token.get("reason"),
+        "issuedAt": token.get("issuedAt"),
+        "usedAt": token.get("usedAt"),
+        "revokedAt": token.get("revokedAt"),
+    }
+    if token.get("status") in {"active", "redeeming"}:
+        payload["token"] = token.get("token")
+    return payload
+
+
+TOKEN_ORIGIN_COPY = {
+    "resale": "Emitido na revenda.",
+    "primary_purchase": "Emitido na compra original.",
+}
+
+
+def remaining_seconds(iso_value):
+    ms = parse_date_ms(iso_value) - utc_now_ms()
+    return max(0, int(ms / 1000))
+
+
+def describe_token_state(share, token, listing, pending_playback, movie):
+    bunny_ready = bool((movie or {}).get("bunnyVideoId") and (movie or {}).get("bunnyLibraryId"))
+    token_status = (token or {}).get("status")
+    listing_status = (listing or {}).get("status")
+    share_state = (share or {}).get("state")
+    origin = TOKEN_ORIGIN_COPY.get((token or {}).get("reason"), "")
+
+    if listing_status == "reserved":
+        code = "checkout_reserved"
+    elif share_state == "listed":
+        code = "held_for_sale"
+    elif token_status == "redeeming" or pending_playback:
+        code = "opening_player"
+    elif share_state == "owned" and token_status == "active":
+        code = "ready"
+    elif share_state == "consumed" or token_status == "used":
+        code = "used"
+    elif token_status == "revoked":
+        code = "revoked"
+    elif share_state == "reserved":
+        code = "checkout_reserved"
+    else:
+        code = "missing"
+
+    stories = {
+        "ready": {
+            "label": "Pronta para assistir",
+            "tokenLabel": "Token ativo",
+            "detail": " ".join(
+                part
+                for part in (
+                    "1 visualização restante.",
+                    origin,
+                    "O token só é gasto se a sessão Bunny abrir.",
+                )
+                if part
+            ),
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "ready", "label": "Aguardando assistir", "state": "current"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "todo"},
+            ],
+        },
+        "opening_player": {
+            "label": "Abrindo player",
+            "tokenLabel": "Token em uso",
+            "detail": "Sessão Bunny em andamento. Se o player não abrir, o token volta a ficar ativo.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "ready", "label": "Aguardando assistir", "state": "done"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "current"},
+            ],
+        },
+        "held_for_sale": {
+            "label": "À venda",
+            "tokenLabel": "Token em espera",
+            "detail": "O token continua válido, mas assistir fica bloqueado enquanto a cota está no mercado. Se vender, este token é revogado e o comprador recebe um novo.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "held", "label": "Em espera no mercado", "state": "current"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
+            ],
+        },
+        "checkout_reserved": {
+            "label": "Checkout em andamento",
+            "tokenLabel": "Token reservado",
+            "detail": "A cota está presa em um pagamento. Se o checkout expirar, ela volta para você.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "held", "label": "Reservada no checkout", "state": "current"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
+            ],
+        },
+        "used": {
+            "label": "Assistida",
+            "tokenLabel": "Token usado",
+            "detail": "A visualização única já foi liberada no Bunny. Esta cota não volta ao mercado.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "ready", "label": "Aguardando assistir", "state": "done"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "done"},
+            ],
+        },
+        "revoked": {
+            "label": "Token revogado",
+            "tokenLabel": "Revogado na revenda",
+            "detail": "O token antigo morreu na transferência. O comprador recebeu um token novo.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "revoked", "label": "Revogado na transferência", "state": "done"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
+            ],
+        },
+        "missing": {
+            "label": "Sem token",
+            "tokenLabel": "Token ausente",
+            "detail": "Esta cota não tem um token ativo para o player.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "todo"},
+                {"id": "ready", "label": "Aguardando assistir", "state": "todo"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "todo"},
+            ],
+        },
+    }
+    story = stories.get(code) or stories["missing"]
+    can_watch = code == "ready" and bunny_ready
+    can_resume = code == "opening_player"
+    can_list = code == "ready"
+    if code == "ready" and not bunny_ready:
+        story = {
+            **story,
+            "detail": "O token está ativo, mas o filme não tem player Bunny. Assistir fica bloqueado para não gastar a visualização.",
+            "steps": [
+                {"id": "issued", "label": "Token emitido", "state": "done"},
+                {"id": "ready", "label": "Aguardando player Bunny", "state": "current"},
+                {"id": "bunny", "label": "Sessão Bunny", "state": "blocked"},
+            ],
+        }
+
+    playback_expires_at = (pending_playback or {}).get("expiresAt")
+    return {
+        "code": code,
+        "label": story["label"],
+        "tokenLabel": story["tokenLabel"],
+        "detail": story["detail"],
+        "steps": story["steps"],
+        "bunnyReady": bunny_ready,
+        "tokenStatus": token_status,
+        "shareState": share_state,
+        "remainingViews": 1 if code in {"ready", "opening_player", "held_for_sale", "checkout_reserved"} else 0,
+        "canWatch": can_watch,
+        "canResume": can_resume,
+        "canList": can_list,
+        "playbackExpiresAt": playback_expires_at,
+        "playbackRemainingSeconds": remaining_seconds(playback_expires_at) if playback_expires_at else 0,
+    }
+
+
 def to_public_checkout(checkout):
     if not checkout:
         return None
@@ -251,6 +418,31 @@ class UrbeService:
         self.store = store
         self.config = config
 
+    def _can_publish(self, user):
+        if getattr(self.config, "open_publish", True):
+            return True
+        return str((user or {}).get("role") or "") == "producer"
+
+    def _wants_producer(self, email, payload=None):
+        email = str(email or "").strip().lower()
+        allowed = {item.strip().lower() for item in (getattr(self.config, "producer_emails", ()) or ()) if item}
+        if email and email in allowed:
+            return True
+        expected = str(getattr(self.config, "producer_invite", "") or "").strip()
+        given = str((payload or {}).get("producerInvite") or (payload or {}).get("invite") or "").strip()
+        if not expected or not given or len(expected) != len(given):
+            return False
+        return hmac.compare_digest(expected, given)
+
+    def _public_user(self, user):
+        payload = sanitize_user(user)
+        payload["canPublish"] = self._can_publish(user)
+        return payload
+
+    def _assert_free_buy_allowed(self):
+        if not getattr(self.config, "allow_free_buy", True):
+            raise AppError("Compra direta desativada. Use o checkout com pagamento.", 403, "PAYMENTS_REQUIRED")
+
     def register_user(self, payload):
         normalized_email = normalize_email(payload.get("email"))
         normalized_name = str(payload.get("name") or "").strip()
@@ -271,7 +463,7 @@ class UrbeService:
                 "id": next_id(db, "user", "usr"),
                 "name": normalized_name,
                 "email": normalized_email,
-                "role": "member",
+                "role": "producer" if self._wants_producer(normalized_email, payload) else "member",
                 "passwordHash": hash_password(payload.get("password")),
                 "createdAt": now,
             }
@@ -279,7 +471,7 @@ class UrbeService:
 
             session = self._create_session(db, user["id"], now)
             return {
-                "user": sanitize_user(user),
+                "user": self._public_user(user),
                 "sessionToken": session["token"],
                 "expiresAt": session["expiresAt"],
             }
@@ -295,9 +487,12 @@ class UrbeService:
             if not user or not verify_password(payload.get("password") or "", user.get("passwordHash")):
                 raise AppError("Credenciais invalidas.", 401, "INVALID_CREDENTIALS")
 
+            if self._wants_producer(user.get("email"), payload) and user.get("role") != "producer":
+                user["role"] = "producer"
+
             session = self._create_session(db, user["id"], now_iso())
             return {
-                "user": sanitize_user(user),
+                "user": self._public_user(user),
                 "sessionToken": session["token"],
                 "expiresAt": session["expiresAt"],
             }
@@ -336,7 +531,7 @@ class UrbeService:
         if not user:
             return None
 
-        return sanitize_user(user)
+        return self._public_user(user)
 
     def list_movies(self):
         def tx(db):
@@ -421,6 +616,8 @@ class UrbeService:
             user = next((item for item in db["users"] if item["id"] == user_id), None)
             if not user:
                 raise AppError("Usuario nao encontrado.", 404, "USER_NOT_FOUND")
+            if not self._can_publish(user):
+                raise AppError("Somente produtores podem publicar filmes.", 403, "PRODUCER_REQUIRED")
 
             now = now_iso()
             movie = {
@@ -471,6 +668,21 @@ class UrbeService:
             "provider": self.config.payments.provider,
             "currency": self.config.payments.currency,
             "checkoutReservationMinutes": self.config.checkout_reservation_minutes,
+            "openPublish": bool(getattr(self.config, "open_publish", True)),
+        }
+
+    def get_bunny_status(self):
+        bunny = self.config.bunny
+        library_id = str(bunny.default_library_id or "").strip()
+        api_key = str(bunny.api_key or "").strip()
+        return {
+            "hasLibrary": bool(library_id),
+            "canCreate": bool(api_key and library_id),
+            "canValidate": bool(api_key and library_id),
+            "signedEmbeds": bool(str(bunny.embed_token_key or "").strip()),
+            "defaultLibraryId": library_id or None,
+            "iframeHost": bunny.iframe_host,
+            "playbackSessionSeconds": int(self.config.playback_session_seconds or 120),
         }
 
     def get_user_payment_orders(self, user_id):
@@ -793,6 +1005,7 @@ class UrbeService:
         return self.store.transaction(tx)
 
     def buy_primary_share(self, user_id, movie_id):
+        self._assert_free_buy_allowed()
         def tx(db):
             self._cleanup_expired_reservations(db)
             buyer = next((item for item in db["users"] if item["id"] == user_id), None)
@@ -835,12 +1048,11 @@ class UrbeService:
                 if share["ownerId"] != user_id:
                     continue
                 movie = next((item for item in db["movies"] if item["id"] == share["movieId"]), None)
-                active_token = next(
-                    (
-                        token
-                        for token in db["accessTokens"]
-                        if token["shareId"] == share["id"] and token["status"] == "active"
-                    ),
+                tokens = [item for item in db["accessTokens"] if item.get("shareId") == share["id"]]
+                tokens.sort(key=lambda item: parse_date_ms(item.get("issuedAt")), reverse=True)
+                latest_token = tokens[0] if tokens else None
+                live_token = next(
+                    (item for item in tokens if item.get("status") in {"active", "redeeming"}),
                     None,
                 )
                 listing = next(
@@ -851,20 +1063,34 @@ class UrbeService:
                     ),
                     None,
                 )
+                pending_playback = None
+                if live_token and live_token.get("status") == "redeeming":
+                    session = next(
+                        (
+                            item
+                            for item in db["playbackSessions"]
+                            if item.get("accessTokenId") == live_token["id"] and item.get("status") == "active"
+                        ),
+                        None,
+                    )
+                    if session:
+                        pending_playback = {
+                            "watchToken": session["token"],
+                            "watchPath": f"/watch/{session['token']}",
+                            "watchUrl": f"/watch/{session['token']}",
+                            "expiresAt": session.get("expiresAt"),
+                            "remainingSeconds": remaining_seconds(session.get("expiresAt")),
+                        }
+                token_for_state = live_token or latest_token
+                token_state = describe_token_state(share, token_for_state, listing, pending_playback, movie)
                 shares.append(
                     {
                         **clone(share),
                         "movie": compact_movie_for_listing(movie) if movie else None,
-                        "activeToken": (
-                            {
-                                "id": active_token["id"],
-                                "token": active_token["token"],
-                                "issuedAt": active_token["issuedAt"],
-                                "reason": active_token["reason"],
-                            }
-                            if active_token
-                            else None
-                        ),
+                        "tokenState": token_state,
+                        "accessToken": public_access_token(token_for_state),
+                        "activeToken": public_access_token(live_token) if live_token else None,
+                        "pendingPlayback": pending_playback,
                         "activeListing": (
                             {
                                 "id": listing["id"],
@@ -930,6 +1156,20 @@ class UrbeService:
                 raise AppError("Cota nao encontrada.", 404, "SHARE_NOT_FOUND")
             if share.get("state") != "owned":
                 raise AppError("Somente cotas ativas podem ser anunciadas.", 409, "INVALID_SHARE_STATE")
+            live_token = next(
+                (
+                    item
+                    for item in db["accessTokens"]
+                    if item.get("shareId") == share_id and item.get("status") == "redeeming"
+                ),
+                None,
+            )
+            if live_token:
+                raise AppError(
+                    "Ha uma sessao de player em andamento. Feche o player ou aguarde expirar para anunciar.",
+                    409,
+                    "PLAYBACK_IN_PROGRESS",
+                )
 
             existing = next(
                 (
@@ -984,6 +1224,7 @@ class UrbeService:
         return self.store.transaction(tx)
 
     def buy_listing(self, user_id, listing_id):
+        self._assert_free_buy_allowed()
         def tx(db):
             self._cleanup_expired_reservations(db)
             buyer = next((item for item in db["users"] if item["id"] == user_id), None)
@@ -1016,7 +1257,7 @@ class UrbeService:
 
         return self.store.transaction(tx)
 
-    def consume_access_token(self, user_id, token_value):
+    def consume_access_token(self, user_id, token_value, bunny_lookup=None):
         token_value = str(token_value or "").strip()
         if not token_value:
             raise AppError("Token de acesso e obrigatorio.", 400, "VALIDATION_ERROR")
@@ -1026,6 +1267,8 @@ class UrbeService:
             access_token = next((item for item in db["accessTokens"] if item.get("token") == token_value), None)
             if not access_token:
                 raise AppError("Token invalido ou expirado.", 404, "TOKEN_NOT_FOUND")
+            if access_token.get("status") == "redeeming":
+                raise AppError("Ja existe uma sessao de player em andamento.", 409, "PLAYBACK_IN_PROGRESS")
             if access_token.get("status") != "active":
                 raise AppError("Este token ja foi utilizado ou revogado.", 409, "TOKEN_NOT_ACTIVE")
 
@@ -1040,6 +1283,9 @@ class UrbeService:
             movie = next((item for item in db["movies"] if item["id"] == share.get("movieId")), None)
             if not movie:
                 raise AppError("Filme nao encontrado.", 404, "MOVIE_NOT_FOUND")
+            self._assert_movie_has_bunny(movie)
+            if bunny_lookup:
+                bunny_lookup(movie.get("bunnyLibraryId"), movie.get("bunnyVideoId"))
 
             now = now_iso()
             watch_token = random_token("watch")
@@ -1060,15 +1306,16 @@ class UrbeService:
             }
             db["playbackSessions"].append(playback)
 
-            access_token["status"] = "used"
-            access_token["usedAt"] = now
-            share["state"] = "consumed"
-            share["consumedAt"] = now
+            access_token["status"] = "redeeming"
+            access_token["usedAt"] = None
             share["updatedAt"] = now
 
             return {
                 "share": clone(share),
                 "movie": compact_movie_for_listing(movie),
+                "tokenState": describe_token_state(share, access_token, None, {
+                    "watchUrl": f"/watch/{watch_token}",
+                }, movie),
                 "playback": {
                     "watchToken": watch_token,
                     "watchPath": f"/watch/{watch_token}",
@@ -1080,7 +1327,65 @@ class UrbeService:
 
         return self.store.transaction(tx)
 
-    def open_playback_session(self, playback_token, client_info, embed_builder):
+    def resume_playback(self, user_id, token_value="", share_id=""):
+        token_value = str(token_value or "").strip()
+        share_id = str(share_id or "").strip()
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            access_token = None
+            if token_value:
+                access_token = next((item for item in db["accessTokens"] if item.get("token") == token_value), None)
+            elif share_id:
+                access_token = next(
+                    (
+                        item
+                        for item in db["accessTokens"]
+                        if item.get("shareId") == share_id and item.get("status") == "redeeming"
+                    ),
+                    None,
+                )
+            if not access_token or access_token.get("status") != "redeeming":
+                raise AppError("Nao ha sessao de player para retomar.", 404, "PLAYBACK_NOT_FOUND")
+
+            share = next((item for item in db["shares"] if item["id"] == access_token.get("shareId")), None)
+            if not share or share.get("ownerId") != user_id:
+                raise AppError("Esta sessao nao pertence a voce.", 403, "FORBIDDEN")
+
+            session = next(
+                (
+                    item
+                    for item in db["playbackSessions"]
+                    if item.get("accessTokenId") == access_token["id"] and item.get("status") == "active"
+                ),
+                None,
+            )
+            if not session:
+                self._restore_playback_token(db, None, access_token, share, now_iso())
+                raise AppError("Sessao de player expirada. Seu token continua ativo.", 410, "PLAYBACK_EXPIRED")
+            if parse_date_ms(session.get("expiresAt")) <= utc_now_ms():
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                raise AppError("Sessao de player expirada. Seu token continua ativo.", 410, "PLAYBACK_EXPIRED")
+
+            movie = next((item for item in db["movies"] if item["id"] == share.get("movieId")), None)
+            return {
+                "share": clone(share),
+                "movie": compact_movie_for_listing(movie) if movie else None,
+                "tokenState": describe_token_state(share, access_token, None, {
+                    "watchUrl": f"/watch/{session['token']}",
+                }, movie),
+                "playback": {
+                    "watchToken": session["token"],
+                    "watchPath": f"/watch/{session['token']}",
+                    "watchUrl": f"/watch/{session['token']}",
+                    "clientSecret": session.get("clientSecret"),
+                    "expiresAt": session.get("expiresAt"),
+                },
+            }
+
+        return self.store.transaction(tx)
+
+    def open_playback_session(self, playback_token, client_info, embed_builder, bunny_lookup=None):
         playback_token = str(playback_token or "").strip()
         client_info = client_info or {}
 
@@ -1089,18 +1394,75 @@ class UrbeService:
             session = next((item for item in db["playbackSessions"] if item.get("token") == playback_token), None)
             if not session:
                 raise AppError("Link de reproducao invalido.", 404, "PLAYBACK_NOT_FOUND")
-            if session.get("status") != "active":
-                raise AppError("Esta visualizacao ja foi utilizada.", 409, "PLAYBACK_USED")
-            if parse_date_ms(session.get("expiresAt")) <= utc_now_ms():
-                session["status"] = "expired"
-                raise AppError("Link de reproducao expirado.", 410, "PLAYBACK_EXPIRED")
-            if session.get("clientSecret") != str(client_info.get("clientSecret") or ""):
-                raise AppError("Sessao de reproducao invalida neste navegador.", 403, "PLAYBACK_FORBIDDEN")
 
             share = next((item for item in db["shares"] if item["id"] == session.get("shareId")), None)
             movie = next((item for item in db["movies"] if item["id"] == (share or {}).get("movieId")), None)
+            access_token = next(
+                (item for item in db["accessTokens"] if item["id"] == session.get("accessTokenId")),
+                None,
+            )
+
+            expired = session.get("status") == "expired" or parse_date_ms(session.get("expiresAt")) <= utc_now_ms()
+            if session.get("status") != "used" and expired:
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                raise AppError("Link de reproducao expirado. Seu token continua ativo.", 410, "PLAYBACK_EXPIRED")
+            if session.get("status") != "active":
+                raise AppError("Esta visualizacao ja foi utilizada.", 409, "PLAYBACK_USED")
+            if session.get("clientSecret") != str(client_info.get("clientSecret") or ""):
+                raise AppError(
+                    "Sessao de reproducao invalida neste navegador. Volte em Minhas cotas e continue pelo mesmo aparelho.",
+                    403,
+                    "PLAYBACK_FORBIDDEN",
+                )
             if not share or not movie:
-                raise AppError("Filme nao encontrado para reproducao.", 404, "MOVIE_NOT_FOUND")
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                raise AppError("Filme nao encontrado para reproducao. Seu token nao foi gasto.", 404, "MOVIE_NOT_FOUND")
+
+            lookup_error = None
+            try:
+                self._assert_movie_has_bunny(movie)
+                if bunny_lookup:
+                    bunny_lookup(movie.get("bunnyLibraryId"), movie.get("bunnyVideoId"))
+            except Exception as error:
+                lookup_error = error
+
+            embed = None
+            embed_error = lookup_error
+            if not embed_error:
+                try:
+                    embed = embed_builder(
+                        {
+                            "libraryId": movie.get("bunnyLibraryId"),
+                            "videoId": movie.get("bunnyVideoId"),
+                            "sessionTag": session["id"],
+                        }
+                    )
+                except Exception as error:
+                    embed_error = error
+
+            if embed_error or not (embed or {}).get("embedUrl"):
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                message = "Player Bunny indisponivel para este filme. Seu token nao foi gasto."
+                if isinstance(embed_error, AppError):
+                    extra = "" if "token" in str(embed_error.message).lower() else " Seu token nao foi gasto."
+                    return {
+                        "_playbackError": AppError(
+                            f"{embed_error.message}{extra}".strip(),
+                            embed_error.status,
+                            embed_error.code,
+                        )
+                    }
+                return {"_playbackError": AppError(message, 502, "BUNNY_EMBED_FAILED")}
+
+            if getattr(self.config, "require_signed_embed", False) and not embed.get("signed"):
+                self._restore_playback_token(db, session, access_token, share, now_iso())
+                return {
+                    "_playbackError": AppError(
+                        "Player Bunny sem assinatura. Seu token nao foi gasto.",
+                        503,
+                        "BUNNY_EMBED_UNSIGNED",
+                    )
+                }
 
             now = now_iso()
             session["status"] = "used"
@@ -1108,58 +1470,80 @@ class UrbeService:
             session["ipAddress"] = client_info.get("ipAddress")
             session["userAgent"] = client_info.get("userAgent")
 
-            embed = embed_builder(
-                {
-                    "libraryId": movie.get("bunnyLibraryId"),
-                    "videoId": movie.get("bunnyVideoId"),
-                    "sessionTag": session["id"],
-                }
-            )
+            if access_token:
+                access_token["status"] = "used"
+                access_token["usedAt"] = now
+            share["state"] = "consumed"
+            share["consumedAt"] = now
+            share["updatedAt"] = now
+
             return {
                 "movie": compact_movie_for_listing(movie),
+                "tokenState": describe_token_state(share, access_token, None, None, movie),
                 "playback": {
                     **(embed or {}),
                     "watchToken": session["token"],
                 },
             }
 
-        return self.store.transaction(tx)
+        result = self.store.transaction(tx)
+        error = result.get("_playbackError") if isinstance(result, dict) else None
+        if error:
+            raise error
+        return result
 
-    def confirm_order_payment(self, correlation_id):
+    def confirm_order_payment(self, correlation_id, payment_gateway):
         correlation_id = str(correlation_id or "").strip()
         if not correlation_id:
             raise AppError("correlationID ausente.", 400, "VALIDATION_ERROR")
+        if payment_gateway is None:
+            raise AppError("Gateway de pagamento ausente.", 500, "PAYMENTS_NOT_CONFIGURED")
+
+        snapshot = self.store.snapshot()
+        order = self._order_by_correlation(snapshot, correlation_id)
+        if not order:
+            raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
+        if order.get("status") == "paid":
+            return {"alreadyPaid": True, "pending": False, "order": self._public_order(order), "purchase": None}
+        if order.get("status") != "pending":
+            raise AppError("Somente ordens pendentes podem ser confirmadas.", 409, "ORDER_NOT_PENDING")
+
+        session_id = order.get("providerSessionId") or order.get("id")
+        checkout = payment_gateway.get_checkout_session_status(session_id, order)
+        if not checkout.get("paid"):
+            return {
+                "alreadyPaid": False,
+                "pending": True,
+                "order": self._public_order(order),
+                "purchase": None,
+            }
+
+        self._assert_paid_amount_matches_order(order, checkout)
 
         def tx(db):
             self._cleanup_expired_reservations(db)
-            order = next(
-                (
-                    item
-                    for item in db["paymentOrders"]
-                    if item.get("id") == correlation_id or item.get("providerSessionId") == correlation_id
-                ),
-                None,
-            )
-            if not order:
+            live = self._order_by_correlation(db, correlation_id)
+            if not live:
                 raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
-            if order.get("status") == "paid":
-                return {"alreadyPaid": True, "order": self._public_order(order), "purchase": None}
-            if order.get("status") != "pending":
+            if live.get("status") == "paid":
+                return {"alreadyPaid": True, "pending": False, "order": self._public_order(live), "purchase": None}
+            if live.get("status") != "pending":
                 raise AppError("Somente ordens pendentes podem ser confirmadas.", 409, "ORDER_NOT_PENDING")
-
-            checkout = {
-                "provider": order.get("provider"),
-                "sessionId": order.get("providerSessionId") or order.get("id"),
-                "paid": True,
-                "amountCents": order.get("amountCents"),
-                "currency": order.get("currency"),
-                "paymentStatus": "paid",
-                "status": "complete",
-            }
-            purchase = self._finalize_paid_order(db, order, checkout)
-            return {"alreadyPaid": False, "order": self._public_order(order), "purchase": purchase}
+            self._assert_paid_amount_matches_order(live, checkout)
+            purchase = self._finalize_paid_order(db, live, checkout)
+            return {"alreadyPaid": False, "pending": False, "order": self._public_order(live), "purchase": purchase}
 
         return self.store.transaction(tx)
+
+    def _order_by_correlation(self, db, correlation_id):
+        return next(
+            (
+                item
+                for item in db["paymentOrders"]
+                if item.get("id") == correlation_id or item.get("providerSessionId") == correlation_id
+            ),
+            None,
+        )
 
     def _listings_for_movie(self, db, movie_id):
         return [
@@ -1241,7 +1625,9 @@ class UrbeService:
 
     def _assert_paid_amount_matches_order(self, order, checkout):
         paid_amount = checkout.get("amountCents")
-        if paid_amount is not None and int(paid_amount) != int(order.get("amountCents") or 0):
+        if paid_amount is None:
+            raise AppError("Provedor nao informou o valor pago.", 502, "AMOUNT_MISSING")
+        if int(paid_amount) != int(order.get("amountCents") or 0):
             raise AppError("Valor pago diverge da ordem.", 409, "AMOUNT_MISMATCH")
         currency = checkout.get("currency")
         if currency and str(currency).upper() != str(order.get("currency") or "").upper():
@@ -1259,6 +1645,58 @@ class UrbeService:
             order["status"] = "expired"
             order["failureReason"] = "Checkout expirado sem pagamento."
             order["updatedAt"] = now
+
+        for session in db["playbackSessions"]:
+            if session.get("status") != "active":
+                continue
+            if parse_date_ms(session.get("expiresAt")) > now_ms:
+                continue
+            access_token = next(
+                (item for item in db["accessTokens"] if item.get("id") == session.get("accessTokenId")),
+                None,
+            )
+            share = next((item for item in db["shares"] if item.get("id") == session.get("shareId")), None)
+            self._restore_playback_token(db, session, access_token, share, now)
+
+        self._recover_stuck_playback_tokens(db, now)
+
+    def _recover_stuck_playback_tokens(self, db, now):
+        for token in db["accessTokens"]:
+            if token.get("status") != "redeeming":
+                continue
+            session = next(
+                (
+                    item
+                    for item in db["playbackSessions"]
+                    if item.get("accessTokenId") == token.get("id") and item.get("status") == "active"
+                ),
+                None,
+            )
+            if session and parse_date_ms(session.get("expiresAt")) > utc_now_ms():
+                continue
+            share = next((item for item in db["shares"] if item.get("id") == token.get("shareId")), None)
+            self._restore_playback_token(db, session, token, share, now)
+
+    def _assert_movie_has_bunny(self, movie):
+        if not (movie or {}).get("bunnyVideoId") or not (movie or {}).get("bunnyLibraryId"):
+            raise AppError(
+                "Este filme ainda nao tem player Bunny. Seu token nao foi gasto.",
+                409,
+                "BUNNY_NOT_READY",
+            )
+
+    def _restore_playback_token(self, db, session, access_token, share, now):
+        if session:
+            session["status"] = "expired"
+            session["consumedAt"] = session.get("consumedAt") or now
+        if access_token and access_token.get("status") == "redeeming":
+            access_token["status"] = "active"
+            access_token["usedAt"] = None
+            if share:
+                share["updatedAt"] = now
+        if share and share.get("state") == "consumed" and not share.get("consumedAt"):
+            share["state"] = "owned"
+            share["updatedAt"] = now
 
     def _release_order_reservation(self, db, order, now):
         share = next((item for item in db["shares"] if item["id"] == order.get("shareId")), None)

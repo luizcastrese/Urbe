@@ -1,7 +1,7 @@
 const VIEW_IDS = ["catalog", "market", "portfolio", "publish", "account"];
 
 const state = {
-  sessionToken: localStorage.getItem("urbe_session") || "",
+  sessionToken: "",
   user: null,
   payments: null,
   movies: [],
@@ -9,6 +9,7 @@ const state = {
   shares: [],
   transactions: [],
   orders: [],
+  bunny: null,
   view: "catalog",
   search: "",
   genre: "",
@@ -57,7 +58,21 @@ const refs = {
   pixTimer: document.querySelector("#pixTimer"),
   playerDialog: document.querySelector("#player-dialog"),
   playerFrame: document.querySelector("#player-frame"),
-  playerTitle: document.querySelector("#player-title")
+  playerTitle: document.querySelector("#player-title"),
+  playerStatus: document.querySelector("#player-status"),
+  bunnyStatusCopy: document.querySelector("#bunny-status-copy"),
+  bunnyCreateBtn: document.querySelector("#bunny-create-btn"),
+  bunnyHint: document.querySelector("#bunny-hint"),
+  bunnyGuideBtn: document.querySelector("#bunny-guide-btn"),
+  bunnyGuideDialog: document.querySelector("#bunny-guide-dialog"),
+  bunnyGuideStage: document.querySelector("#bunny-guide-stage"),
+  bunnyGuideCaption: document.querySelector("#bunny-guide-caption"),
+  bunnyGuideUrl: document.querySelector("#bunny-guide-url"),
+  bunnyGuideDots: document.querySelector("#bunny-guide-dots"),
+  bunnyGuidePlay: document.querySelector("#bunny-guide-play"),
+  bunnyGuidePrev: document.querySelector("#bunny-guide-prev"),
+  bunnyGuideNext: document.querySelector("#bunny-guide-next"),
+  bunnyGuideApply: document.querySelector("#bunny-guide-apply")
 };
 
 const actionHandlers = {
@@ -65,7 +80,8 @@ const actionHandlers = {
   "buy-listing": (button) => requestListingPurchase(button.dataset.listingId),
   "create-listing": (button) => openListingDialog(button.dataset.shareId),
   "cancel-listing": (button) => cancelListing(button.dataset.listingId),
-  "consume-token": (button) => confirmWatch(button.dataset.token, button.dataset.movieTitle),
+  "consume-token": (button) => confirmWatch(button.dataset.token, button.dataset.movieTitle, button.dataset.shareId),
+  "resume-playback": (button) => resumeWatch(button.dataset.shareId, button.dataset.movieTitle),
   "login-to-buy": (button) => requireAuth(button.dataset.resume || "buy")
 };
 
@@ -73,6 +89,34 @@ let pixOrderId = "";
 let pixSessionId = "";
 let pixTimerInterval = null;
 let pixPollInterval = null;
+let playbackPollInterval = null;
+let playbackShareId = "";
+let bunnyGuideTimer = null;
+let bunnyGuideStep = 1;
+let bunnyGuidePlaying = false;
+
+const BUNNY_GUIDE_STEPS = [
+  {
+    step: 1,
+    url: "dash.bunny.net → Delivery → Stream",
+    caption: "Na Bunny, abra a biblioteca do filme e envie o arquivo. O encode começa sozinho."
+  },
+  {
+    step: 2,
+    url: "dash.bunny.net → vídeo → Video ID",
+    caption: "Abra o vídeo e copie o Video ID (guid). Ele também está na URL de embed, depois da biblioteca."
+  },
+  {
+    step: 3,
+    url: "dash.bunny.net → biblioteca → API",
+    caption: "Na aba API da mesma biblioteca, copie o Library ID. É o número da URL de embed."
+  },
+  {
+    step: 4,
+    url: "urbe → Publicar → Player Bunny",
+    caption: "Cole os dois IDs neste anúncio. Se tiver o embed, cole a URL inteira no ID do vídeo."
+  }
+];
 
 function pixImageSrc(raw) {
   const value = String(raw || "").trim();
@@ -119,15 +163,93 @@ function centsToReaisInput(cents) {
   return ((Number(cents) || 0) / 100).toFixed(2).replace(".", ",");
 }
 
-function badgeForState(shareState) {
+function formatCountdown(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  const min = Math.floor(value / 60);
+  const sec = value % 60;
+  return `${min}:${sec.toString().padStart(2, "0")}`;
+}
+
+function tokenStory(share) {
+  const ts = share.tokenState || {};
+  const code = ts.code;
+  const bunnyReady = Boolean(ts.bunnyReady);
+  const token = share.accessToken || share.activeToken;
+  const origin =
+    token?.reason === "resale" ? "Token emitido na revenda." : token?.reason === "primary_purchase" ? "Token emitido na compra original." : "";
+  const bunnyLine = bunnyReady
+    ? "Player Bunny pronto para esta cota."
+    : "Player Bunny incompleto — sem ID de vídeo o token não abre.";
+
   const map = {
-    available: { cls: "ok", label: "Disponível" },
-    reserved: { cls: "warn", label: "Reservada" },
-    owned: { cls: "ok", label: "Pronta para assistir" },
-    listed: { cls: "warn", label: "Anunciada" },
-    consumed: { cls: "fail", label: "Assistida" }
+    ready: {
+      cls: "ok",
+      label: "Pronta para assistir",
+      tokenLabel: "Token ativo",
+      detail: `1 visualização restante. ${origin} Ao abrir o player, o token é gasto.`.trim()
+    },
+    opening_player: {
+      cls: "warn",
+      label: "Abrindo player",
+      tokenLabel: "Token em uso",
+      detail: "Sessão Bunny em andamento. Se o player não abrir, o token volta a ficar ativo."
+    },
+    held_for_sale: {
+      cls: "warn",
+      label: "À venda",
+      tokenLabel: "Token em espera",
+      detail: "O token continua válido, mas assistir fica bloqueado enquanto a cota está no mercado. Se vender, este token é revogado e o comprador recebe um novo."
+    },
+    checkout_reserved: {
+      cls: "warn",
+      label: "Checkout em andamento",
+      tokenLabel: "Token reservado",
+      detail: "A cota está presa em um pagamento. Se o checkout expirar, ela volta para você."
+    },
+    used: {
+      cls: "fail",
+      label: "Assistida",
+      tokenLabel: "Token usado",
+      detail: "A visualização única já foi liberada no Bunny. Esta cota não volta ao mercado."
+    },
+    revoked: {
+      cls: "fail",
+      label: "Token revogado",
+      tokenLabel: "Revogado na revenda",
+      detail: "O token antigo morreu na transferência. O comprador recebeu um token novo."
+    },
+    missing: {
+      cls: "fail",
+      label: "Sem token",
+      tokenLabel: "Token ausente",
+      detail: "Esta cota não tem um token ativo para o player."
+    }
   };
-  return map[shareState] || { cls: "", label: shareState };
+  const story = map[code] || map[share.state] || map.missing;
+  const remainingViews = Number.isFinite(ts.remainingViews) ? ts.remainingViews : code === "used" || code === "revoked" || code === "missing" ? 0 : 1;
+  return {
+    ...story,
+    cls: map[code]?.cls || story.cls,
+    label: ts.label || story.label,
+    tokenLabel: ts.tokenLabel || story.tokenLabel,
+    detail: ts.detail || story.detail,
+    bunnyLine,
+    bunnyReady,
+    canWatch: ts.canWatch ?? (code === "ready" && bunnyReady && Boolean(share.activeToken?.token || token?.token)),
+    canResume: ts.canResume ?? code === "opening_player",
+    canList: ts.canList ?? code === "ready",
+    steps: Array.isArray(ts.steps) ? ts.steps : [],
+    remainingViews,
+    playbackRemainingSeconds: ts.playbackRemainingSeconds || share.pendingPlayback?.remainingSeconds || 0,
+    code
+  };
+}
+
+function tokenStepsHtml(steps) {
+  if (!steps.length) return "";
+  return `<ol class="token-steps">${steps
+    .map((step) => `<li class="is-${escapeHtml(step.state || "todo")}">${escapeHtml(step.label)}</li>`)
+    .join("")}</ol>`;
 }
 
 function transactionLabel(type) {
@@ -225,6 +347,7 @@ async function api(path, { method = "GET", body } = {}) {
     response = await fetch(url, {
       method,
       headers,
+      credentials: "include",
       body: body !== undefined ? JSON.stringify(body) : undefined
     });
   } catch {
@@ -262,6 +385,9 @@ function showView(viewName, { updateHash = true } = {}) {
         ? "Entre para publicar um filme e emitir cotas."
         : "Entre para ver suas cotas, tokens e histórico.";
     nextView = "account";
+  } else if (nextView === "publish" && state.user && !state.user.canPublish) {
+    notify("Publicar exige perfil de produtor.", true);
+    nextView = "catalog";
   }
 
   state.view = nextView;
@@ -287,8 +413,11 @@ function requireAuth(reason) {
 function setSession(token, user) {
   state.sessionToken = token || "";
   state.user = user || null;
-  if (token) localStorage.setItem("urbe_session", token);
-  else localStorage.removeItem("urbe_session");
+  try {
+    localStorage.removeItem("urbe_session");
+  } catch {
+    // ignore
+  }
   renderSession();
 }
 
@@ -298,6 +427,11 @@ function renderSession() {
   refs.logoutBtn.hidden = !loggedIn;
   refs.loginBtn.hidden = loggedIn;
   document.body.classList.toggle("is-authenticated", loggedIn);
+
+  const publishNav = document.querySelector('[data-nav="publish"]');
+  if (publishNav) {
+    publishNav.hidden = Boolean(state.user) && !state.user.canPublish;
+  }
 
   const ownedCount = state.shares.filter((share) => share.state === "owned" || share.state === "listed").length;
   if (loggedIn && ownedCount) {
@@ -376,6 +510,7 @@ function renderMovies() {
           <small class="item-meta">${movieMetaLine(movie) || "Ficha em atualização"}</small>
           <p class="price-tag">${formatPriceFromCents(movie.priceCents)}</p>
           <small>${available} ${available === 1 ? "cota disponível" : "cotas disponíveis"} · ${movie.stats?.listed || 0} no mercado</small>
+          <small class="bunny-line">${movie.bunnyVideoId ? "Player Bunny ligado a este filme" : "Este filme ainda não tem player Bunny"}</small>
           <button data-action="${buyAction}" data-movie-id="${movie.id}" data-resume="buy" ${buyDisabled ? "disabled" : ""}>
             ${buyLabel}
           </button>
@@ -425,19 +560,28 @@ function renderShares() {
   }
   if (!state.shares.length) {
     refs.sharesGrid.innerHTML =
-      '<div class="empty-state"><strong>Você ainda não tem cotas</strong><p>Compre no catálogo ou no mercado secundário. O token chega na hora.</p></div>';
+      '<div class="empty-state"><strong>Você ainda não tem cotas</strong><p>Compre no catálogo ou no mercado secundário. O token chega na hora e só é gasto quando o player Bunny abre.</p></div>';
     return;
   }
 
   refs.sharesGrid.innerHTML = state.shares
     .map((share) => {
-      const badge = badgeForState(share.state);
-      const token = share.activeToken?.token;
+      const story = tokenStory(share);
+      const token = share.activeToken?.token || (share.tokenState?.code === "ready" ? share.accessToken?.token : "");
       const actions = [];
-      if (share.state === "owned" && token) {
+      if (story.canResume) {
         actions.push(
-          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir agora</button>`
+          `<button data-action="resume-playback" data-share-id="${share.id}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Continuar no player Bunny</button>`
         );
+      }
+      if (story.canWatch && token) {
+        actions.push(
+          `<button data-action="consume-token" data-token="${escapeHtml(token)}" data-share-id="${share.id}" data-movie-title="${escapeHtml(share.movie?.title || "Filme")}">Assistir no Bunny</button>`
+        );
+      } else if (share.tokenState?.code === "ready" && !story.bunnyReady) {
+        actions.push(`<small class="token-block">Assistir bloqueado até o filme ter ID Bunny. O token permanece ativo.</small>`);
+      }
+      if (story.canList) {
         actions.push(`<button class="ghost" data-action="create-listing" data-share-id="${share.id}">Anunciar revenda</button>`);
       }
       if (share.state === "listed" && share.activeListing?.id && share.activeListing.status !== "reserved") {
@@ -445,18 +589,26 @@ function renderShares() {
           `<button class="ghost" data-action="cancel-listing" data-listing-id="${share.activeListing.id}">Tirar do mercado</button>`
         );
       }
+      const listingLine = share.activeListing
+        ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
+        : "";
+      const countdown =
+        story.canResume && story.playbackRemainingSeconds
+          ? `<small class="token-countdown">Sessão expira em ${formatCountdown(story.playbackRemainingSeconds)}</small>`
+          : "";
       return `
         <article class="item item-share" data-share-id="${share.id}">
           <small class="item-kicker">${escapeHtml(share.movie?.genre || "Cota")}</small>
           <strong>${escapeHtml(share.movie?.title || "Filme")}</strong>
-          <span class="badge ${badge.cls}">${badge.label}</span>
-          ${
-            share.activeListing
-              ? `<small>Anúncio ${share.activeListing.status === "reserved" ? "reservado no checkout" : "ativo"}: ${formatPriceFromCents(share.activeListing.priceCents)}</small>`
-              : token
-                ? "<small>Token ativo · uma visualização</small>"
-                : "<small>Sem token ativo</small>"
-          }
+          <div class="token-status token-status-${story.cls}">
+            <span class="badge ${story.cls}">${escapeHtml(story.label)}</span>
+            <small class="token-line"><strong>${escapeHtml(story.tokenLabel)}</strong></small>
+            <small class="token-line">${escapeHtml(story.detail)}</small>
+            <small class="bunny-line">${escapeHtml(story.bunnyLine)}</small>
+            ${tokenStepsHtml(story.steps)}
+            ${countdown}
+          </div>
+          ${listingLine}
           <div class="inline">${actions.join("")}</div>
         </article>
       `;
@@ -493,13 +645,51 @@ function renderTransactions() {
 
 function renderPendingBanner() {
   const pending = (state.orders || []).filter((order) => order.status === "pending");
-  if (!pending.length) {
+  const opening = (state.shares || []).filter((share) => share.tokenState?.code === "opening_player");
+  if (!pending.length && !opening.length) {
     refs.pendingBanner.hidden = true;
     refs.pendingBanner.innerHTML = "";
     return;
   }
   refs.pendingBanner.hidden = false;
-  refs.pendingBanner.innerHTML = `<strong>Checkout em andamento.</strong> ${pending.length === 1 ? "Uma cota está reservada" : `${pending.length} cotas estão reservadas`} até o pagamento ser confirmado.`;
+  const parts = [];
+  if (opening.length) {
+    const first = opening[0];
+    parts.push(
+      `<strong>Sessão Bunny em andamento.</strong> O token de ${escapeHtml(first.movie?.title || "um filme")} está em uso. Se o player não abrir, ele volta a ficar ativo. <button type="button" class="ghost" data-action="resume-playback" data-share-id="${first.id}" data-movie-title="${escapeHtml(first.movie?.title || "Filme")}">Continuar no player</button>`
+    );
+  }
+  if (pending.length) {
+    parts.push(
+      `<strong>Checkout em andamento.</strong> ${pending.length === 1 ? "Uma cota está reservada" : `${pending.length} cotas estão reservadas`} até o pagamento ser confirmado.`
+    );
+  }
+  refs.pendingBanner.innerHTML = parts.join("");
+}
+
+function renderBunnyStatus() {
+  if (!refs.bunnyStatusCopy) return;
+  const bunny = state.bunny || {};
+  const libraryInput = refs.movieForm?.bunnyLibraryId;
+  if (libraryInput && bunny.defaultLibraryId && !libraryInput.value) {
+    libraryInput.value = bunny.defaultLibraryId;
+  }
+  if (refs.bunnyCreateBtn) refs.bunnyCreateBtn.hidden = !bunny.canCreate;
+  if (bunny.canCreate) {
+    refs.bunnyStatusCopy.textContent =
+      "Bunny Stream está ligado neste servidor. Crie o vídeo aqui ou cole um ID já existente. O token do espectador só é gasto quando essa sessão abre.";
+  } else if (bunny.hasLibrary) {
+    refs.bunnyStatusCopy.textContent =
+      "A biblioteca Bunny já está definida. Cole o ID do vídeo para o player funcionar.";
+  } else {
+    refs.bunnyStatusCopy.textContent =
+      "Informe biblioteca e ID do vídeo da Bunny. Sem isso, a cota até vende — mas o player não abre.";
+  }
+  if (refs.bunnyHint) {
+    refs.bunnyHint.textContent = bunny.signedEmbeds
+      ? "O embed vai assinado. O token só é marcado como usado se a sessão Bunny abrir. Cole o guid ou a URL de embed."
+      : "O player usa o embed da Bunny. Cole o guid ou a URL de embed — separamos a biblioteca na hora.";
+  }
 }
 
 function renderAll() {
@@ -513,14 +703,17 @@ function renderAll() {
 }
 
 async function refreshData() {
-  const [moviesResp, listingsResp, paymentsResp] = await Promise.all([
+  const [moviesResp, listingsResp, paymentsResp, bunnyResp] = await Promise.all([
     api("/api/movies"),
     api("/api/listings"),
-    api("/api/payments/config")
+    api("/api/payments/config"),
+    api("/api/bunny/status").catch(() => ({ bunny: null }))
   ]);
   state.movies = moviesResp.movies || [];
   state.listings = listingsResp.listings || [];
   state.payments = paymentsResp.payments || null;
+  state.bunny = bunnyResp.bunny || null;
+  renderBunnyStatus();
 
   if (state.user) {
     const [sharesResp, txResp, ordersResp] = await Promise.all([
@@ -594,15 +787,11 @@ async function bootstrapSession() {
   refs.marketGrid.innerHTML = skeletonCards(2);
   showView(currentHashView(), { updateHash: false });
 
-  if (state.sessionToken) {
-    try {
-      const me = await api("/api/auth/me");
-      setSession(state.sessionToken, me.user);
-    } catch {
-      setSession("", null);
-    }
-  } else {
-    renderSession();
+  try {
+    const me = await api("/api/auth/me");
+    setSession(state.sessionToken, me.user);
+  } catch {
+    setSession("", null);
   }
 
   try {
@@ -657,6 +846,124 @@ async function logout() {
   showView("catalog");
 }
 
+function parseBunnyIdentifiers(rawVideo, rawLibrary) {
+  const videoInput = String(rawVideo || "").trim();
+  const libraryInput = String(rawLibrary || "").trim();
+  const embed = videoInput.match(
+    /(?:iframe|player)\.mediadelivery\.net\/(?:embed|play)\/(\d+)\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f-]{8,})/i
+  );
+  if (embed) {
+    return { libraryId: embed[1], videoId: embed[2], fromEmbed: true };
+  }
+  const pair = videoInput.match(/^(\d+)\s*[/,]\s*([0-9a-f-]{8,})$/i);
+  if (pair) {
+    return { libraryId: pair[1], videoId: pair[2], fromEmbed: false };
+  }
+  return { libraryId: libraryInput, videoId: videoInput, fromEmbed: false };
+}
+
+function fillBunnyFieldsFromInput(notifyUser = false) {
+  const videoField = refs.movieForm?.bunnyVideoId;
+  const libraryField = refs.movieForm?.bunnyLibraryId;
+  if (!videoField) return false;
+  const parsed = parseBunnyIdentifiers(videoField.value, libraryField?.value);
+  if (!parsed.videoId) return false;
+  const changed = videoField.value !== parsed.videoId || (libraryField && parsed.libraryId && libraryField.value !== parsed.libraryId);
+  videoField.value = parsed.videoId;
+  if (libraryField && parsed.libraryId) libraryField.value = parsed.libraryId;
+  if (changed && parsed.fromEmbed) {
+    if (refs.bunnyHint) {
+      refs.bunnyHint.textContent = "URL de embed reconhecida. Biblioteca e ID do vídeo foram preenchidos.";
+    }
+    if (notifyUser) notify("Embed da Bunny reconhecido. IDs preenchidos no anúncio.");
+  }
+  return Boolean(parsed.videoId && parsed.libraryId);
+}
+
+function stopBunnyGuide() {
+  if (bunnyGuideTimer) clearInterval(bunnyGuideTimer);
+  bunnyGuideTimer = null;
+  bunnyGuidePlaying = false;
+  if (refs.bunnyGuidePlay) refs.bunnyGuidePlay.textContent = "Reproduzir";
+  refs.bunnyGuideStage?.classList.add("is-paused");
+}
+
+function renderBunnyGuideStep(step) {
+  const total = BUNNY_GUIDE_STEPS.length;
+  bunnyGuideStep = ((step - 1 + total) % total) + 1;
+  const current = BUNNY_GUIDE_STEPS[bunnyGuideStep - 1];
+  if (refs.bunnyGuideStage) refs.bunnyGuideStage.dataset.step = String(bunnyGuideStep);
+  if (refs.bunnyGuideCaption) refs.bunnyGuideCaption.textContent = current.caption;
+  if (refs.bunnyGuideUrl) refs.bunnyGuideUrl.textContent = current.url;
+  refs.bunnyGuideDots?.querySelectorAll("button").forEach((dot, index) => {
+    dot.classList.toggle("is-on", index + 1 === bunnyGuideStep);
+    dot.setAttribute("aria-selected", index + 1 === bunnyGuideStep ? "true" : "false");
+  });
+  const videoField = refs.movieForm?.bunnyVideoId?.closest(".field");
+  const libraryField = refs.movieForm?.bunnyLibraryId?.closest(".field");
+  videoField?.classList.toggle("is-guide-focus", bunnyGuideStep === 4);
+  libraryField?.classList.toggle("is-guide-focus", bunnyGuideStep === 4);
+}
+
+function startBunnyGuide(reset = false) {
+  if (!refs.bunnyGuideDots?.childElementCount) {
+    refs.bunnyGuideDots.innerHTML = BUNNY_GUIDE_STEPS.map(
+      (item, index) =>
+        `<button type="button" role="tab" data-guide-step="${item.step}" aria-label="Passo ${item.step}" class="${index === 0 ? "is-on" : ""}"></button>`
+    ).join("");
+  }
+  const prefersReduced = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  renderBunnyGuideStep(reset ? 1 : bunnyGuideStep);
+  if (prefersReduced) {
+    stopBunnyGuide();
+    return;
+  }
+  bunnyGuidePlaying = true;
+  refs.bunnyGuideStage?.classList.remove("is-paused");
+  if (refs.bunnyGuidePlay) refs.bunnyGuidePlay.textContent = "Pausar";
+  if (bunnyGuideTimer) clearInterval(bunnyGuideTimer);
+  bunnyGuideTimer = setInterval(() => renderBunnyGuideStep(bunnyGuideStep + 1), 4200);
+}
+
+function openBunnyGuide() {
+  if (!refs.bunnyGuideDialog) return;
+  startBunnyGuide(true);
+  refs.bunnyGuideDialog.showModal();
+}
+
+function closeBunnyGuideFocus() {
+  stopBunnyGuide();
+  refs.movieForm?.bunnyVideoId?.closest(".field")?.classList.remove("is-guide-focus");
+  refs.movieForm?.bunnyLibraryId?.closest(".field")?.classList.remove("is-guide-focus");
+}
+
+async function createBunnyVideo() {
+  const title = String(refs.movieForm?.title?.value || "").trim();
+  if (!title) {
+    notify("Preencha o título do filme antes de criar o vídeo na Bunny.", true);
+    return;
+  }
+  await withLoading(async () => {
+    const response = await api("/api/bunny/videos", {
+      method: "POST",
+      body: {
+        title,
+        libraryId: refs.movieForm?.bunnyLibraryId?.value || state.bunny?.defaultLibraryId
+      }
+    });
+    const videoId = response.videoId || response.bunnyVideo?.guid;
+    const libraryId = response.libraryId || state.bunny?.defaultLibraryId;
+    if (!videoId) throw new Error("A Bunny não devolveu o ID do vídeo.");
+    if (refs.movieForm?.bunnyVideoId) refs.movieForm.bunnyVideoId.value = videoId;
+    if (libraryId && refs.movieForm?.bunnyLibraryId) refs.movieForm.bunnyLibraryId.value = libraryId;
+    const ready = response.readyToPlay ? "já pode tocar" : "criado — envie o arquivo no painel da Bunny para o player ficar pronto";
+    notify(`Vídeo ${videoId} ${ready}.`);
+    if (refs.bunnyHint) {
+      refs.bunnyHint.textContent = `ID preenchido. ${ready.charAt(0).toUpperCase()}${ready.slice(1)}.`;
+    }
+  });
+}
+
 async function createMovie(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -666,6 +973,10 @@ async function createMovie(event) {
     notify("Informe um preço válido em reais, por exemplo 25,00.", true);
     return;
   }
+
+  const bunnyIds = parseBunnyIdentifiers(formData.get("bunnyVideoId"), formData.get("bunnyLibraryId"));
+  if (refs.movieForm?.bunnyVideoId) refs.movieForm.bunnyVideoId.value = bunnyIds.videoId;
+  if (bunnyIds.libraryId && refs.movieForm?.bunnyLibraryId) refs.movieForm.bunnyLibraryId.value = bunnyIds.libraryId;
 
   const payload = {
     title: formData.get("title"),
@@ -679,14 +990,15 @@ async function createMovie(event) {
     cast: formData.get("cast"),
     priceCents,
     totalShares: Number(formData.get("totalShares")),
-    bunnyVideoId: formData.get("bunnyVideoId"),
-    bunnyLibraryId: formData.get("bunnyLibraryId") || undefined
+    bunnyVideoId: bunnyIds.videoId,
+    bunnyLibraryId: bunnyIds.libraryId || undefined
   };
 
   await withLoading(async () => {
     await api("/api/movies", { method: "POST", body: payload });
-    notify("Filme publicado. As cotas já estão no catálogo.");
+    notify("Filme publicado. As cotas já estão no catálogo com player Bunny.");
     form.reset();
+    renderBunnyStatus();
     await refreshData();
     showView("catalog");
   });
@@ -794,11 +1106,11 @@ async function cancelListing(listingId) {
   });
 }
 
-function confirmWatch(token, movieTitle) {
-  state.confirmAction = { type: "watch", token, movieTitle };
-  refs.confirmTitle.textContent = "Assistir agora?";
-  refs.confirmCopy.textContent = `${movieTitle} usa uma visualização única. Depois de abrir o player, esta cota não poderá ser assistida de novo nem revendida.`;
-  refs.confirmAccept.textContent = "Assistir";
+function confirmWatch(token, movieTitle, shareId) {
+  state.confirmAction = { type: "watch", token, movieTitle, shareId };
+  refs.confirmTitle.textContent = "Abrir o player Bunny?";
+  refs.confirmCopy.textContent = `${movieTitle} usa uma visualização única. O token só é gasto se a sessão Bunny abrir. Se o player falhar, a cota continua pronta para assistir.`;
+  refs.confirmAccept.textContent = "Abrir player";
   refs.confirmDialog.showModal();
 }
 
@@ -807,18 +1119,90 @@ async function submitConfirm(event) {
   refs.confirmDialog.close();
   const action = state.confirmAction;
   state.confirmAction = null;
-  if (action?.type === "watch") await consumeToken(action.token, action.movieTitle);
+  if (action?.type === "watch") await consumeToken(action.token, action.movieTitle, action.shareId);
 }
 
-async function consumeToken(token, movieTitle) {
+async function openPlayer(playbackUrl, movieTitle, statusText, shareId) {
+  if (!playbackUrl) throw new Error("Não foi possível gerar o link de reprodução.");
+  refs.playerTitle.textContent = `${movieTitle} · sessão Bunny`;
+  if (refs.playerStatus) refs.playerStatus.textContent = statusText;
+  playbackShareId = shareId || "";
+  refs.playerFrame.src = playbackUrl;
+  refs.playerDialog.showModal();
+  if (playbackShareId) startPlaybackPoll(playbackShareId);
+}
+
+function stopPlaybackPoll() {
+  if (playbackPollInterval) clearInterval(playbackPollInterval);
+  playbackPollInterval = null;
+}
+
+function startPlaybackPoll(shareId) {
+  playbackShareId = shareId;
+  stopPlaybackPoll();
+  playbackPollInterval = setInterval(() => {
+    syncPlaybackState().catch(() => {});
+  }, 2000);
+}
+
+async function syncPlaybackState() {
+  if (!state.user) return;
+  const sharesResp = await api("/api/me/shares");
+  state.shares = sharesResp.shares || [];
+  const share = playbackShareId ? state.shares.find((item) => item.id === playbackShareId) : null;
+  if (share && refs.playerStatus) {
+    const story = tokenStory(share);
+    if (story.code === "used" || share.tokenState?.code === "used") {
+      refs.playerStatus.textContent = "Sessão Bunny aberta. Token usado — esta visualização não se repete.";
+      stopPlaybackPoll();
+    } else if (share.tokenState?.code === "ready") {
+      refs.playerStatus.textContent = "O player não confirmou a sessão. Seu token voltou a ficar ativo.";
+      stopPlaybackPoll();
+    } else if (share.tokenState?.code === "opening_player") {
+      const left = story.playbackRemainingSeconds ? ` Expira em ${formatCountdown(story.playbackRemainingSeconds)}.` : "";
+      refs.playerStatus.textContent = `Conectando ao Bunny Stream. Token em uso.${left}`;
+    }
+  }
+  renderShares();
+  renderPendingBanner();
+}
+
+function applyWatchMessage(data) {
+  if (!refs.playerStatus) return;
+  if (data.tokenSpent) {
+    refs.playerStatus.textContent = "Sessão Bunny aberta. Token usado — esta visualização não se repete.";
+    stopPlaybackPoll();
+  } else if (data.code === "PLAYBACK_FORBIDDEN") {
+    refs.playerStatus.textContent = "Abra pelo mesmo navegador. O token continua em sessão — use Continuar no player.";
+  } else {
+    refs.playerStatus.textContent = data.message
+      ? `${data.message}`
+      : "Player não abriu. Seu token não foi gasto.";
+  }
+  refreshData().catch((error) => notify(error.message, true));
+}
+
+async function consumeToken(token, movieTitle, shareId) {
   await withLoading(async () => {
     const response = await api("/api/access/consume", { method: "POST", body: { token } });
     const playbackUrl = response.playback.watchUrl || response.playback.watchPath || response.playback.embedUrl;
-    if (!playbackUrl) throw new Error("Não foi possível gerar o link de reprodução.");
-    refs.playerTitle.textContent = `${movieTitle} · visualização única`;
-    refs.playerFrame.src = playbackUrl;
-    refs.playerDialog.showModal();
-    notify("Sessão liberada. Aproveite a sessão.");
+    await openPlayer(
+      playbackUrl,
+      movieTitle,
+      "Conectando ao Bunny Stream. Se o player não abrir, seu token volta a ficar ativo.",
+      response.share?.id || shareId
+    );
+    notify("Sessão Bunny pedida. O token só confirma o uso depois que o player abrir.");
+    await refreshData();
+  });
+}
+
+async function resumeWatch(shareId, movieTitle) {
+  await withLoading(async () => {
+    const response = await api("/api/access/resume", { method: "POST", body: { shareId } });
+    const playbackUrl = response.playback.watchUrl || response.playback.watchPath;
+    await openPlayer(playbackUrl, movieTitle, "Retomando a sessão Bunny em andamento.", response.share?.id || shareId);
+    notify("Retomando o player. O estado do token atualiza quando a sessão abrir.");
     await refreshData();
   });
 }
@@ -965,6 +1349,22 @@ function bindGlobalActions() {
 
   refs.playerDialog.addEventListener("close", () => {
     refs.playerFrame.src = "";
+    stopPlaybackPoll();
+    playbackShareId = "";
+    if (refs.playerStatus) {
+      refs.playerStatus.textContent = "Conectando ao Bunny Stream. O token só é usado se o player abrir.";
+    }
+    refreshData().catch((error) => notify(error.message, true));
+  });
+  refs.playerFrame.addEventListener("load", () => {
+    if (!refs.playerFrame.src) return;
+    syncPlaybackState().catch(() => {});
+  });
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin) return;
+    const data = event.data;
+    if (!data || data.source !== "urbe-watch") return;
+    applyWatchMessage(data);
   });
   refs.pixDialog.addEventListener("close", () => {
     clearInterval(pixTimerInterval);
@@ -985,6 +1385,28 @@ function bindForms() {
   });
   refs.movieForm.addEventListener("submit", (event) => createMovie(event).catch((error) => notify(error.message, true)));
   refs.movieForm.querySelector('[name="priceReais"]').addEventListener("input", updatePriceHint);
+  refs.bunnyCreateBtn?.addEventListener("click", () => createBunnyVideo().catch((error) => notify(error.message, true)));
+  refs.bunnyGuideBtn?.addEventListener("click", () => openBunnyGuide());
+  refs.bunnyGuidePrev?.addEventListener("click", () => renderBunnyGuideStep(bunnyGuideStep - 1));
+  refs.bunnyGuideNext?.addEventListener("click", () => renderBunnyGuideStep(bunnyGuideStep + 1));
+  refs.bunnyGuidePlay?.addEventListener("click", () => {
+    if (bunnyGuidePlaying) stopBunnyGuide();
+    else startBunnyGuide();
+  });
+  refs.bunnyGuideDots?.addEventListener("click", (event) => {
+    const step = Number(event.target.closest("[data-guide-step]")?.dataset.guideStep);
+    if (step) renderBunnyGuideStep(step);
+  });
+  refs.bunnyGuideApply?.addEventListener("click", () => {
+    refs.bunnyGuideDialog?.close();
+    refs.movieForm?.bunnyVideoId?.focus();
+    notify("Cole o Video ID ou a URL de embed. A biblioteca entra no campo de baixo.");
+  });
+  refs.bunnyGuideDialog?.addEventListener("close", () => closeBunnyGuideFocus());
+  refs.movieForm?.bunnyVideoId?.addEventListener("paste", () => {
+    window.setTimeout(() => fillBunnyFieldsFromInput(true), 0);
+  });
+  refs.movieForm?.bunnyVideoId?.addEventListener("change", () => fillBunnyFieldsFromInput(true));
   refs.listingForm.addEventListener("submit", (event) => submitListing(event).catch((error) => notify(error.message, true)));
   refs.confirmForm.addEventListener("submit", (event) => submitConfirm(event).catch((error) => notify(error.message, true)));
   refs.pixCopyBtn.addEventListener("click", () => copiarPix());
