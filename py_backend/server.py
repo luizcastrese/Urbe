@@ -44,11 +44,6 @@ PAYMENT_GATEWAY = None
 AUTH_LIMITER = RateLimiter()
 
 
-def wants_launch_check(argv=None):
-    args = sys.argv[1:] if argv is None else argv
-    return "--check" in list(args or [])
-
-
 def init_runtime():
     global STORE, SERVICE, PAYMENT_GATEWAY
     if SERVICE is not None and STORE is not None and PAYMENT_GATEWAY is not None:
@@ -56,10 +51,6 @@ def init_runtime():
     STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
     SERVICE = UrbeService(STORE, CONFIG)
     PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
-
-
-if not wants_launch_check():
-    init_runtime()
 
 
 def client_ip(handler):
