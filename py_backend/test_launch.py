@@ -213,7 +213,14 @@ class LaunchHelpersTest(unittest.TestCase):
         self.assertTrue(is_stripe_expired_event("checkout.session.expired"))
         unpaid = {
             "type": "checkout.session.completed",
-            "data": {"object": {"client_reference_id": "ord_9", "payment_status": "unpaid"}},
+            "data": {
+                "object": {
+                    "id": "cs_test_unpaid",
+                    "object": "checkout.session",
+                    "client_reference_id": "ord_9",
+                    "payment_status": "unpaid",
+                }
+            },
         }
         self.assertFalse(is_stripe_paid_event(unpaid["type"], unpaid))
 

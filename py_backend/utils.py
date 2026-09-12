@@ -202,9 +202,7 @@ def extract_stripe_session(body):
         return {}
     data = body.get("data") if isinstance(body.get("data"), dict) else {}
     session = data.get("object") if isinstance(data.get("object"), dict) else {}
-    if str(session.get("object") or "") == "checkout.session" or session.get("id"):
-        return session
-    return {}
+    return session if session else {}
 
 
 def extract_stripe_order_id(body):
