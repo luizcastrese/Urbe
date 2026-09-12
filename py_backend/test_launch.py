@@ -15,22 +15,22 @@ from http.server import ThreadingHTTPServer
 from py_backend.config import (
     BunnyConfig,
     Config,
-    OpenPixConfig,
     PaymentsConfig,
+    StripeConfig,
     assert_runtime_ready,
     production_gaps,
 )
 from py_backend.errors import AppError
-from py_backend.payments import create_payment_gateway
+from py_backend.payments import StripePaymentGateway, create_payment_gateway, session_status_from_stripe
 from py_backend.service import UrbeService
 from py_backend.store import JsonStore
 from py_backend.utils import (
-    extract_openpix_correlation_id,
-    extract_openpix_event,
-    is_openpix_expired_event,
-    is_openpix_paid_event,
+    extract_stripe_event_type,
+    extract_stripe_order_id,
+    is_stripe_expired_event,
+    is_stripe_paid_event,
     load_env_file,
-    verify_openpix_signature,
+    verify_stripe_signature,
 )
 
 
@@ -53,24 +53,27 @@ def launch_config(db_file, **overrides):
             currency="BRL",
             success_url="http://localhost:3000/?checkout=success&orderId={ORDER_ID}",
             cancel_url="http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}",
-            openpix=OpenPixConfig(app_id=""),
+            stripe=StripeConfig(secret_key=""),
         ),
     )
     values.update(overrides)
     return Config(**values)
 
 
+def stripe_sign(secret, body, timestamp=None):
+    stamp = int(timestamp if timestamp is not None else __import__("time").time())
+    signature = hmac.new(secret.encode("utf-8"), f"{stamp}.".encode("utf-8") + body, hashlib.sha256).hexdigest()
+    return f"t={stamp},v1={signature}"
+
+
 class DelayedGateway:
-    provider = "openpix"
+    provider = "stripe"
 
     def create_checkout_session(self, order, description, buyer, success_url, cancel_url):
         return {
-            "provider": "openpix",
-            "sessionId": order["id"],
-            "checkoutUrl": None,
-            "pixCopiaECola": "00020126",
-            "qrCodeBase64": "https://example.test/qr.png",
-            "expiresIn": 900,
+            "provider": "stripe",
+            "sessionId": f"cs_{order['id']}",
+            "checkoutUrl": "https://checkout.stripe.com/c/pay/cs_test",
             "paid": False,
             "amountCents": order["amountCents"],
             "currency": order["currency"],
@@ -81,7 +84,7 @@ class DelayedGateway:
 
     def get_checkout_session_status(self, session_id, expected_order):
         return {
-            "provider": "openpix",
+            "provider": "stripe",
             "sessionId": session_id,
             "paid": True,
             "amountCents": expected_order["amountCents"],
@@ -116,7 +119,7 @@ class LaunchHelpersTest(unittest.TestCase):
         gaps = production_gaps(config)
         self.assertIn("PAYMENTS_PROVIDER nao pode ser mock", gaps)
         self.assertIn("DATABASE_URL", gaps)
-        self.assertIn("OPENPIX_WEBHOOK_SECRET", gaps)
+        self.assertNotIn("STRIPE_SECRET_KEY", gaps)
         with self.assertRaises(SystemExit):
             assert_runtime_ready(config)
 
@@ -131,11 +134,11 @@ class LaunchHelpersTest(unittest.TestCase):
                 iframe_host="https://iframe.mediadelivery.net",
             ),
             payments=PaymentsConfig(
-                provider="openpix",
+                provider="stripe",
                 currency="BRL",
                 success_url="https://urbe.test/ok",
                 cancel_url="https://urbe.test/cancel",
-                openpix=OpenPixConfig(app_id="app", webhook_secret="secret"),
+                stripe=StripeConfig(secret_key="sk_test_123", webhook_secret="whsec_test"),
             ),
         )
         self.assertEqual(production_gaps(ready), [])
@@ -144,15 +147,15 @@ class LaunchHelpersTest(unittest.TestCase):
     def test_check_lista_gaps_sem_inicializar_servicos(self):
         env = os.environ.copy()
         for key in (
-            "OPENPIX_APP_ID",
-            "OPENPIX_WEBHOOK_SECRET",
+            "STRIPE_SECRET_KEY",
+            "STRIPE_WEBHOOK_SECRET",
             "BUNNY_STREAM_API_KEY",
             "BUNNY_STREAM_LIBRARY_ID",
             "BUNNY_STREAM_EMBED_TOKEN_KEY",
         ):
             env[key] = ""
         env["URBE_ENV"] = "production"
-        env["PAYMENTS_PROVIDER"] = "openpix"
+        env["PAYMENTS_PROVIDER"] = "stripe"
         env["DATABASE_URL"] = "postgres://invalid:invalid@127.0.0.1:1/urbe"
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
         result = subprocess.run(
@@ -166,8 +169,8 @@ class LaunchHelpersTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertNotIn("Traceback", result.stderr)
         self.assertIn("Pendencias de lancamento", result.stdout)
-        self.assertIn("OPENPIX_APP_ID", result.stdout)
-        self.assertIn("OPENPIX_WEBHOOK_SECRET", result.stdout)
+        self.assertIn("STRIPE_SECRET_KEY", result.stdout)
+        self.assertIn("STRIPE_WEBHOOK_SECRET", result.stdout)
 
     def test_run_check_programatico_nao_inicializa_runtime(self):
         from py_backend import server
@@ -189,30 +192,96 @@ class LaunchHelpersTest(unittest.TestCase):
         finally:
             server.init_runtime = original
 
-    def test_payload_oficial_openpix(self):
+    def test_payload_oficial_stripe(self):
         body = {
-            "event": "OPENPIX:CHARGE_COMPLETED",
-            "charge": {"correlationID": "ord_9", "status": "COMPLETED", "value": 2000},
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "id": "cs_test_1",
+                    "object": "checkout.session",
+                    "client_reference_id": "ord_9",
+                    "metadata": {"order_id": "ord_9"},
+                    "payment_status": "paid",
+                    "amount_total": 2000,
+                    "currency": "brl",
+                }
+            },
         }
-        self.assertEqual(extract_openpix_event(body), "OPENPIX:CHARGE_COMPLETED")
-        self.assertEqual(extract_openpix_correlation_id(body), "ord_9")
-        self.assertTrue(is_openpix_paid_event(body["event"], body))
-        self.assertTrue(is_openpix_expired_event("OPENPIX:CHARGE_EXPIRED"))
-        self.assertFalse(is_openpix_paid_event("OPENPIX:CHARGE_CREATED", body))
+        self.assertEqual(extract_stripe_event_type(body), "checkout.session.completed")
+        self.assertEqual(extract_stripe_order_id(body), "ord_9")
+        self.assertTrue(is_stripe_paid_event(body["type"], body))
+        self.assertTrue(is_stripe_expired_event("checkout.session.expired"))
+        unpaid = {
+            "type": "checkout.session.completed",
+            "data": {"object": {"client_reference_id": "ord_9", "payment_status": "unpaid"}},
+        }
+        self.assertFalse(is_stripe_paid_event(unpaid["type"], unpaid))
 
-        legacy = {"event": "pix_received", "data": {"correlationID": "ord_1"}}
-        self.assertTrue(is_openpix_paid_event(legacy["event"], legacy))
-        self.assertEqual(extract_openpix_correlation_id(legacy), "ord_1")
+    def test_assinatura_stripe(self):
+        raw = b'{"type":"checkout.session.completed"}'
+        secret = "whsec_test"
+        header = stripe_sign(secret, raw, timestamp=int(__import__("time").time()))
+        self.assertTrue(verify_stripe_signature(raw, header, secret))
+        self.assertFalse(verify_stripe_signature(raw, "t=1,v1=deadbeef", secret))
 
-    def test_assinatura_hmac_hex_e_base64(self):
-        raw = b'{"event":"OPENPIX:CHARGE_COMPLETED"}'
-        secret = "whsec"
-        digest = hmac.new(secret.encode("utf-8"), raw, hashlib.sha256)
-        self.assertTrue(verify_openpix_signature(raw, digest.hexdigest(), secret))
-        self.assertTrue(verify_openpix_signature(raw, digest.hexdigest().upper(), secret))
-        encoded = __import__("base64").b64encode(digest.digest()).decode("ascii")
-        self.assertTrue(verify_openpix_signature(raw, encoded, secret))
-        self.assertFalse(verify_openpix_signature(raw, "deadbeef", secret))
+    def test_stripe_gateway_exige_chave_e_devolve_url(self):
+        with self.assertRaises(AppError) as error:
+            StripePaymentGateway(secret_key="", api_base="https://api.stripe.com/v1", currency="BRL")
+        self.assertEqual(error.exception.code, "PAYMENTS_NOT_CONFIGURED")
+
+        gateway = StripePaymentGateway(secret_key="sk_test_123", api_base="https://api.stripe.test/v1", currency="BRL")
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "id": "cs_test_abc",
+                        "url": "https://checkout.stripe.com/c/pay/cs_test_abc",
+                        "payment_status": "unpaid",
+                        "status": "open",
+                    }
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_urlopen(req, timeout=20):
+            captured["url"] = req.full_url
+            captured["data"] = req.data.decode("utf-8")
+            return FakeResponse()
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            checkout = gateway.create_checkout_session(
+                order={"id": "ord_1", "amountCents": 2500, "movieId": "mov_1", "currency": "BRL"},
+                description="Cota Urbe",
+                buyer={"email": "buyer@urbe.test"},
+                success_url="http://localhost:3000/?checkout=success&orderId={ORDER_ID}",
+                cancel_url="http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}",
+            )
+        finally:
+            urllib.request.urlopen = original
+
+        self.assertEqual(checkout["checkoutUrl"], "https://checkout.stripe.com/c/pay/cs_test_abc")
+        self.assertEqual(checkout["sessionId"], "cs_test_abc")
+        self.assertFalse(checkout["paid"])
+        self.assertIn("checkout/sessions", captured["url"])
+        self.assertIn("customer_email=buyer%40urbe.test", captured["data"])
+        self.assertIn("client_reference_id=ord_1", captured["data"])
+        self.assertIn("session_id%3D%7BCHECKOUT_SESSION_ID%7D", captured["data"])
+
+        paid = session_status_from_stripe(
+            {"id": "cs_test_abc", "payment_status": "paid", "status": "complete", "amount_total": 2500, "currency": "brl"}
+        )
+        self.assertTrue(paid["paid"])
+        self.assertEqual(paid["status"], "complete")
 
 
 class LaunchServiceTest(unittest.TestCase):
@@ -261,7 +330,7 @@ class LaunchServiceTest(unittest.TestCase):
         movie = self.service.create_movie(
             producer["id"],
             {
-                "title": "Filme Expira Pix",
+                "title": "Filme Expira Stripe",
                 "description": "Teste",
                 "genre": "Drama",
                 "durationMinutes": 90,
@@ -289,13 +358,13 @@ class LaunchHttpTest(unittest.TestCase):
         cls.original_store = server.STORE
         cls.original_service = server.SERVICE
         cls.original_gateway = server.PAYMENT_GATEWAY
-        cls.original_secret = server.CONFIG.payments.openpix.webhook_secret
+        cls.original_secret = server.CONFIG.payments.stripe.webhook_secret
         store = JsonStore(db_file)
         server.STORE = store
         server.SERVICE = UrbeService(store, server.CONFIG)
         if server.PAYMENT_GATEWAY is None:
             server.PAYMENT_GATEWAY = create_payment_gateway(server.CONFIG.payments)
-        server.CONFIG.payments.openpix.webhook_secret = "whsec_http"
+        server.CONFIG.payments.stripe.webhook_secret = "whsec_http"
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.UrbeHandler)
         cls.port = cls.httpd.server_address[1]
         cls.thread = threading.Thread(target=cls.httpd.serve_forever, daemon=True)
@@ -308,7 +377,7 @@ class LaunchHttpTest(unittest.TestCase):
         cls.server_module.STORE = cls.original_store
         cls.server_module.SERVICE = cls.original_service
         cls.server_module.PAYMENT_GATEWAY = cls.original_gateway
-        cls.server_module.CONFIG.payments.openpix.webhook_secret = cls.original_secret
+        cls.server_module.CONFIG.payments.stripe.webhook_secret = cls.original_secret
         shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def _url(self, path):
@@ -354,22 +423,27 @@ class LaunchHttpTest(unittest.TestCase):
         pending = server.SERVICE.start_primary_checkout(buyer["id"], movie["id"], DelayedGateway())
         body = json.dumps(
             {
-                "event": "OPENPIX:CHARGE_COMPLETED",
-                "charge": {
-                    "correlationID": pending["order"]["id"],
-                    "status": "COMPLETED",
-                    "value": pending["order"]["amountCents"],
+                "type": "checkout.session.completed",
+                "data": {
+                    "object": {
+                        "id": pending["checkout"]["sessionId"],
+                        "object": "checkout.session",
+                        "client_reference_id": pending["order"]["id"],
+                        "metadata": {"order_id": pending["order"]["id"]},
+                        "payment_status": "paid",
+                        "amount_total": pending["order"]["amountCents"],
+                        "currency": "brl",
+                    }
                 },
             }
         ).encode("utf-8")
-        signature = hmac.new(b"whsec_http", body, hashlib.sha256).hexdigest()
         request = urllib.request.Request(
-            self._url("/api/payments/webhook/openpix"),
+            self._url("/api/payments/webhook/stripe"),
             data=body,
             method="POST",
             headers={
                 "Content-Type": "application/json",
-                "X-Webhook-Signature": signature,
+                "Stripe-Signature": stripe_sign("whsec_http", body),
             },
         )
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -380,12 +454,12 @@ class LaunchHttpTest(unittest.TestCase):
         self.assertEqual(shares[0]["tokenState"]["code"], "ready")
 
     def test_webhook_assinatura_invalida(self):
-        body = b'{"event":"OPENPIX:CHARGE_COMPLETED","charge":{"correlationID":"ord_x"}}'
+        body = b'{"type":"checkout.session.completed","data":{"object":{"client_reference_id":"ord_x"}}}'
         request = urllib.request.Request(
-            self._url("/api/payments/webhook/openpix"),
+            self._url("/api/payments/webhook/stripe"),
             data=body,
             method="POST",
-            headers={"Content-Type": "application/json", "X-OpenPix-Signature": "nope"},
+            headers={"Content-Type": "application/json", "Stripe-Signature": "t=1,v1=nope"},
         )
         with self.assertRaises(urllib.error.HTTPError) as error:
             urllib.request.urlopen(request, timeout=5)

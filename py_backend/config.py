@@ -34,12 +34,10 @@ class BunnyConfig:
 
 
 @dataclass
-class OpenPixConfig:
-    app_id: str
-    api_base: str = "https://api.openpix.com.br/api/v1"
-    split_pix_key: str = ""
-    split_percent: int = 10
+class StripeConfig:
+    secret_key: str
     webhook_secret: str = ""
+    api_base: str = "https://api.stripe.com/v1"
 
 
 @dataclass
@@ -48,7 +46,7 @@ class PaymentsConfig:
     currency: str
     success_url: str
     cancel_url: str
-    openpix: OpenPixConfig
+    stripe: StripeConfig
 
 
 @dataclass
@@ -79,24 +77,12 @@ def load_config():
     root_dir = os.getcwd()
     is_production = detect_production()
     database_url = os.getenv("DATABASE_URL", "").strip()
-    openpix_app_id = os.getenv("OPENPIX_APP_ID", "")
-    payments_provider = os.getenv("PAYMENTS_PROVIDER", "openpix" if openpix_app_id else "mock")
+    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    payments_provider = os.getenv("PAYMENTS_PROVIDER", "stripe" if stripe_secret_key else "mock")
     payments_currency = os.getenv("PAYMENTS_CURRENCY", "BRL").upper()
-    openpix_split_pix_key = os.getenv("OPENPIX_SPLIT_PIX_KEY", "").strip()
-    openpix_webhook_secret = os.getenv("OPENPIX_WEBHOOK_SECRET", "").strip()
+    stripe_webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
     bunny_api_key = os.getenv("BUNNY_STREAM_API_KEY", "")
     embed_token_key = os.getenv("BUNNY_STREAM_EMBED_TOKEN_KEY", "")
-
-    split_percent_raw = os.getenv("OPENPIX_SPLIT_PERCENT", "10")
-    try:
-        split_percent = int(split_percent_raw)
-    except ValueError:
-        split_percent = 10
-
-    if split_percent < 0:
-        split_percent = 0
-    if split_percent > 100:
-        split_percent = 100
 
     origins = env_csv("PUBLIC_APP_ORIGIN") or ("http://localhost:3000",)
     provider = payments_provider.lower()
@@ -106,7 +92,7 @@ def load_config():
         db_file=os.getenv("DB_FILE", os.path.join(root_dir, "data", "urbe-db.json")),
         database_url=database_url,
         session_duration_days=int(os.getenv("SESSION_DURATION_DAYS", "30")),
-        checkout_reservation_minutes=int(os.getenv("CHECKOUT_RESERVATION_MINUTES", "15")),
+        checkout_reservation_minutes=int(os.getenv("CHECKOUT_RESERVATION_MINUTES", "30")),
         playback_session_seconds=int(os.getenv("PLAYBACK_SESSION_SECONDS", "120")),
         bunny=BunnyConfig(
             api_key=bunny_api_key,
@@ -119,17 +105,15 @@ def load_config():
             currency=payments_currency,
             success_url=os.getenv(
                 "PAYMENTS_CHECKOUT_SUCCESS_URL",
-                "http://localhost:3000/?checkout=success&orderId={ORDER_ID}",
+                "http://localhost:3000/?checkout=success&orderId={ORDER_ID}&session_id={CHECKOUT_SESSION_ID}",
             ),
             cancel_url=os.getenv(
                 "PAYMENTS_CHECKOUT_CANCEL_URL",
                 "http://localhost:3000/?checkout=cancel&orderId={ORDER_ID}",
             ),
-            openpix=OpenPixConfig(
-                app_id=openpix_app_id,
-                split_pix_key=openpix_split_pix_key,
-                split_percent=split_percent,
-                webhook_secret=openpix_webhook_secret,
+            stripe=StripeConfig(
+                secret_key=stripe_secret_key,
+                webhook_secret=stripe_webhook_secret,
             ),
         ),
         is_production=is_production,
@@ -148,10 +132,10 @@ def production_gaps(config):
     gaps = []
     if config.payments.provider == "mock":
         gaps.append("PAYMENTS_PROVIDER nao pode ser mock")
-    if config.payments.provider == "openpix" and not config.payments.openpix.app_id:
-        gaps.append("OPENPIX_APP_ID")
-    if not config.payments.openpix.webhook_secret:
-        gaps.append("OPENPIX_WEBHOOK_SECRET")
+    if config.payments.provider == "stripe" and not getattr(config.payments.stripe, "secret_key", ""):
+        gaps.append("STRIPE_SECRET_KEY")
+    if config.payments.provider == "stripe" and not getattr(config.payments.stripe, "webhook_secret", ""):
+        gaps.append("STRIPE_WEBHOOK_SECRET")
     if not config.database_url:
         gaps.append("DATABASE_URL")
     if not config.bunny.api_key:

@@ -22,15 +22,15 @@ from .store import JsonStore, PostgresStore
 from .utils import (
     RateLimiter,
     build_cookie,
-    extract_openpix_correlation_id,
-    extract_openpix_event,
+    extract_stripe_event_type,
+    extract_stripe_order_id,
     get_session_token,
-    is_openpix_expired_event,
-    is_openpix_paid_event,
-    openpix_signature_from_headers,
+    is_stripe_expired_event,
+    is_stripe_paid_event,
     parse_cookies,
     read_json_bytes,
-    verify_openpix_signature,
+    stripe_signature_from_headers,
+    verify_stripe_signature,
 )
 
 PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -287,9 +287,9 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "POST", "pattern": re.compile(r"^/api/access/resume$"), "auth": True, "handler": "api_access_resume"},
         {
             "method": "POST",
-            "pattern": re.compile(r"^/api/payments/webhook/openpix$"),
+            "pattern": re.compile(r"^/api/payments/webhook/stripe$"),
             "auth": False,
-            "handler": "api_payments_openpix_webhook",
+            "handler": "api_payments_stripe_webhook",
         },
     ]
 
@@ -590,42 +590,42 @@ class UrbeHandler(BaseHTTPRequestHandler):
             {},
         )
 
-    def api_payments_openpix_webhook(self, ctx):
+    def api_payments_stripe_webhook(self, ctx):
         body = ctx["body"]
         raw_body = ctx.get("rawBody", b"")
         headers = ctx.get("headers") or self.headers
-        signature = openpix_signature_from_headers(headers)
-        secret = CONFIG.payments.openpix.webhook_secret
+        signature = stripe_signature_from_headers(headers)
+        secret = getattr(CONFIG.payments.stripe, "webhook_secret", "")
 
         if not secret:
-            return 503, {"error": "OPENPIX_WEBHOOK_SECRET nao configurado", "code": "WEBHOOK_NOT_CONFIGURED"}, {}
+            return 503, {"error": "STRIPE_WEBHOOK_SECRET nao configurado", "code": "WEBHOOK_NOT_CONFIGURED"}, {}
 
-        if not signature or not verify_openpix_signature(raw_body, signature, secret):
+        if not signature or not verify_stripe_signature(raw_body, signature, secret):
             return 401, {"error": "assinatura invalida", "code": "INVALID_SIGNATURE"}, {}
 
-        event = extract_openpix_event(body)
-        correlation_id = extract_openpix_correlation_id(body)
+        event = extract_stripe_event_type(body)
+        order_id = extract_stripe_order_id(body)
 
-        if is_openpix_paid_event(event, body):
-            if not correlation_id:
-                return 400, {"error": "correlationID ausente", "code": "VALIDATION_ERROR"}, {}
+        if is_stripe_paid_event(event, body):
+            if not order_id:
+                return 400, {"error": "order_id ausente", "code": "VALIDATION_ERROR"}, {}
             try:
-                result = SERVICE.confirm_order_payment(correlation_id, PAYMENT_GATEWAY)
+                result = SERVICE.confirm_order_payment(order_id, PAYMENT_GATEWAY)
                 if result.get("pending"):
                     return 200, {"status": "pending"}, {}
                 return 200, {"status": "ok"}, {}
             except AppError as error:
                 if error.code == "ORDER_NOT_FOUND":
                     return 200, {"status": "ignored", "reason": "order_not_found"}, {}
-                print(f"Erro no webhook OpenPix: {error.code} {error.message}")
+                print(f"Erro no webhook Stripe: {error.code} {error.message}")
                 return error.status, {"error": error.message, "code": error.code}, {}
             except Exception as error:
-                print(f"Erro no webhook OpenPix: {error}")
+                print(f"Erro no webhook Stripe: {error}")
                 return 500, {"error": "falha interna", "code": "INTERNAL_ERROR"}, {}
 
-        if is_openpix_expired_event(event) and correlation_id:
+        if is_stripe_expired_event(event) and order_id:
             try:
-                SERVICE.expire_order_payment(correlation_id)
+                SERVICE.expire_order_payment(order_id)
                 return 200, {"status": "expired"}, {}
             except AppError as error:
                 if error.code == "ORDER_NOT_FOUND":
@@ -771,7 +771,7 @@ def run(argv=None):
             for gap in gaps:
                 print(f"- {gap}")
             raise SystemExit(1)
-        print("Pronto para producao: persistencia, Pix, Bunny e origem publica configurados.")
+        print("Pronto para producao: persistencia, Stripe, Bunny e origem publica configurados.")
         return
 
     assert_runtime_ready(CONFIG)
