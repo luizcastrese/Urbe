@@ -3,6 +3,8 @@ import hmac
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -19,6 +21,7 @@ from py_backend.config import (
     production_gaps,
 )
 from py_backend.errors import AppError
+from py_backend.payments import create_payment_gateway
 from py_backend.service import UrbeService
 from py_backend.store import JsonStore
 from py_backend.utils import (
@@ -138,6 +141,54 @@ class LaunchHelpersTest(unittest.TestCase):
         self.assertEqual(production_gaps(ready), [])
         assert_runtime_ready(ready)
 
+    def test_check_lista_gaps_sem_inicializar_servicos(self):
+        env = os.environ.copy()
+        for key in (
+            "OPENPIX_APP_ID",
+            "OPENPIX_WEBHOOK_SECRET",
+            "BUNNY_STREAM_API_KEY",
+            "BUNNY_STREAM_LIBRARY_ID",
+            "BUNNY_STREAM_EMBED_TOKEN_KEY",
+        ):
+            env[key] = ""
+        env["URBE_ENV"] = "production"
+        env["PAYMENTS_PROVIDER"] = "openpix"
+        env["DATABASE_URL"] = "postgres://invalid:invalid@127.0.0.1:1/urbe"
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+        result = subprocess.run(
+            [sys.executable, "-m", "py_backend.server", "--check"],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("Pendencias de lancamento", result.stdout)
+        self.assertIn("OPENPIX_APP_ID", result.stdout)
+        self.assertIn("OPENPIX_WEBHOOK_SECRET", result.stdout)
+
+    def test_run_check_programatico_nao_inicializa_runtime(self):
+        from py_backend import server
+
+        called = {"n": 0}
+        original = server.init_runtime
+
+        def boom():
+            called["n"] += 1
+            raise AssertionError("init_runtime nao deve rodar no --check")
+
+        server.init_runtime = boom
+        try:
+            try:
+                server.run(["--check"])
+            except SystemExit:
+                pass
+            self.assertEqual(called["n"], 0)
+        finally:
+            server.init_runtime = original
+
     def test_payload_oficial_openpix(self):
         body = {
             "event": "OPENPIX:CHARGE_COMPLETED",
@@ -237,10 +288,13 @@ class LaunchHttpTest(unittest.TestCase):
         db_file = os.path.join(cls.temp_dir, "db.json")
         cls.original_store = server.STORE
         cls.original_service = server.SERVICE
+        cls.original_gateway = server.PAYMENT_GATEWAY
         cls.original_secret = server.CONFIG.payments.openpix.webhook_secret
         store = JsonStore(db_file)
         server.STORE = store
         server.SERVICE = UrbeService(store, server.CONFIG)
+        if server.PAYMENT_GATEWAY is None:
+            server.PAYMENT_GATEWAY = create_payment_gateway(server.CONFIG.payments)
         server.CONFIG.payments.openpix.webhook_secret = "whsec_http"
         cls.httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.UrbeHandler)
         cls.port = cls.httpd.server_address[1]
@@ -253,6 +307,7 @@ class LaunchHttpTest(unittest.TestCase):
         cls.httpd.server_close()
         cls.server_module.STORE = cls.original_store
         cls.server_module.SERVICE = cls.original_service
+        cls.server_module.PAYMENT_GATEWAY = cls.original_gateway
         cls.server_module.CONFIG.payments.openpix.webhook_secret = cls.original_secret
         shutil.rmtree(cls.temp_dir, ignore_errors=True)
 

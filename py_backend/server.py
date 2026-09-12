@@ -38,10 +38,19 @@ REPO_ROOT = os.path.abspath(os.path.join(PACKAGE_DIR, os.pardir))
 ROOT_DIR = REPO_ROOT if os.path.isdir(os.path.join(REPO_ROOT, "public")) else os.getcwd()
 PUBLIC_DIR = os.path.join(ROOT_DIR, "public")
 CONFIG = load_config()
-STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
-SERVICE = UrbeService(STORE, CONFIG)
-PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
+STORE = None
+SERVICE = None
+PAYMENT_GATEWAY = None
 AUTH_LIMITER = RateLimiter()
+
+
+def init_runtime():
+    global STORE, SERVICE, PAYMENT_GATEWAY
+    if SERVICE is not None and STORE is not None and PAYMENT_GATEWAY is not None:
+        return
+    STORE = PostgresStore(CONFIG.database_url) if CONFIG.database_url else JsonStore(CONFIG.db_file)
+    SERVICE = UrbeService(STORE, CONFIG)
+    PAYMENT_GATEWAY = create_payment_gateway(CONFIG.payments)
 
 
 def client_ip(handler):
@@ -766,6 +775,7 @@ def run(argv=None):
         return
 
     assert_runtime_ready(CONFIG)
+    init_runtime()
     server = ThreadingHTTPServer(("0.0.0.0", CONFIG.port), UrbeHandler)
     print(f"Urbe disponivel em http://localhost:{CONFIG.port}")
     server.serve_forever()
