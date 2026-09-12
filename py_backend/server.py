@@ -238,7 +238,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "POST", "pattern": re.compile(r"^/api/auth/register$"), "auth": False, "handler": "api_auth_register"},
         {"method": "POST", "pattern": re.compile(r"^/api/auth/login$"), "auth": False, "handler": "api_auth_login"},
         {"method": "POST", "pattern": re.compile(r"^/api/auth/logout$"), "auth": True, "handler": "api_auth_logout"},
-        {"method": "GET", "pattern": re.compile(r"^/api/auth/me$"), "auth": True, "handler": "api_auth_me"},
+        {"method": "GET", "pattern": re.compile(r"^/api/auth/me$"), "auth": False, "handler": "api_auth_me"},
         {"method": "GET", "pattern": re.compile(r"^/api/movies$"), "auth": False, "handler": "api_movies_list"},
         {"method": "GET", "pattern": re.compile(r"^/api/movies/([^/]+)$"), "auth": False, "handler": "api_movies_get"},
         {"method": "POST", "pattern": re.compile(r"^/api/movies$"), "auth": True, "handler": "api_movies_create"},

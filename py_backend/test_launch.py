@@ -259,6 +259,12 @@ class LaunchHttpTest(unittest.TestCase):
     def _url(self, path):
         return f"http://127.0.0.1:{self.port}{path}"
 
+    def test_auth_me_anonimo_nao_e_401(self):
+        with urllib.request.urlopen(self._url("/api/auth/me"), timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertIsNone(payload.get("user"))
+
     def test_health_e_cabecalhos(self):
         with urllib.request.urlopen(self._url("/api/health"), timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
