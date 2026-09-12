@@ -3,6 +3,8 @@ import hmac
 import json
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -137,6 +139,35 @@ class LaunchHelpersTest(unittest.TestCase):
         )
         self.assertEqual(production_gaps(ready), [])
         assert_runtime_ready(ready)
+
+    def test_check_lista_gaps_sem_inicializar_servicos(self):
+        env = os.environ.copy()
+        for key in (
+            "DATABASE_URL",
+            "OPENPIX_APP_ID",
+            "OPENPIX_WEBHOOK_SECRET",
+            "BUNNY_STREAM_API_KEY",
+            "BUNNY_STREAM_LIBRARY_ID",
+            "BUNNY_STREAM_EMBED_TOKEN_KEY",
+        ):
+            env.pop(key, None)
+        env["URBE_ENV"] = "production"
+        env["PAYMENTS_PROVIDER"] = "openpix"
+        env["DATABASE_URL"] = "postgres://invalid:invalid@127.0.0.1:1/urbe"
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+        result = subprocess.run(
+            [sys.executable, "-m", "py_backend.server", "--check"],
+            cwd=repo_root,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("Pendencias de lancamento", result.stdout)
+        self.assertIn("OPENPIX_APP_ID", result.stdout)
+        self.assertIn("OPENPIX_WEBHOOK_SECRET", result.stdout)
 
     def test_payload_oficial_openpix(self):
         body = {
