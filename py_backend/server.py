@@ -14,7 +14,7 @@ from .bunny import (
     lookup_bunny_video,
     public_bunny_video,
 )
-from .config import assert_runtime_ready, load_config
+from .config import assert_runtime_ready, load_config, production_gaps
 from .errors import AppError
 from .payments import create_payment_gateway
 from .service import UrbeService
@@ -22,7 +22,12 @@ from .store import JsonStore, PostgresStore
 from .utils import (
     RateLimiter,
     build_cookie,
+    extract_openpix_correlation_id,
+    extract_openpix_event,
     get_session_token,
+    is_openpix_expired_event,
+    is_openpix_paid_event,
+    openpix_signature_from_headers,
     parse_cookies,
     read_json_bytes,
     verify_openpix_signature,
@@ -233,7 +238,7 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "POST", "pattern": re.compile(r"^/api/auth/register$"), "auth": False, "handler": "api_auth_register"},
         {"method": "POST", "pattern": re.compile(r"^/api/auth/login$"), "auth": False, "handler": "api_auth_login"},
         {"method": "POST", "pattern": re.compile(r"^/api/auth/logout$"), "auth": True, "handler": "api_auth_logout"},
-        {"method": "GET", "pattern": re.compile(r"^/api/auth/me$"), "auth": True, "handler": "api_auth_me"},
+        {"method": "GET", "pattern": re.compile(r"^/api/auth/me$"), "auth": False, "handler": "api_auth_me"},
         {"method": "GET", "pattern": re.compile(r"^/api/movies$"), "auth": False, "handler": "api_movies_list"},
         {"method": "GET", "pattern": re.compile(r"^/api/movies/([^/]+)$"), "auth": False, "handler": "api_movies_get"},
         {"method": "POST", "pattern": re.compile(r"^/api/movies$"), "auth": True, "handler": "api_movies_create"},
@@ -271,7 +276,6 @@ class UrbeHandler(BaseHTTPRequestHandler):
         {"method": "POST", "pattern": re.compile(r"^/api/bunny/videos$"), "auth": True, "handler": "api_bunny_create_video"},
         {"method": "POST", "pattern": re.compile(r"^/api/access/consume$"), "auth": True, "handler": "api_access_consume"},
         {"method": "POST", "pattern": re.compile(r"^/api/access/resume$"), "auth": True, "handler": "api_access_resume"},
-        # === NOVA ROTA DO WEBHOOK OPENPIX ===
         {
             "method": "POST",
             "pattern": re.compile(r"^/api/payments/webhook/openpix$"),
@@ -491,14 +495,38 @@ class UrbeHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", mime_type)
         self.send_header("Content-Length", str(len(content)))
+        for key, value in self._flatten_headers(self._security_headers(static_path=file_path)):
+            self.send_header(key, str(value))
         self.end_headers()
         self.wfile.write(content)
+
+    def _security_headers(self, *, html=False, static_path=None):
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Referrer-Policy": "strict-origin-when-cross-origin",
+            "X-Frame-Options": "SAMEORIGIN",
+            "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+        }
+        if CONFIG.cookie_secure:
+            headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        if static_path:
+            name = os.path.basename(static_path)
+            if name in {"index.html", "robots.txt"}:
+                headers["Cache-Control"] = "no-cache"
+            else:
+                headers["Cache-Control"] = "public, max-age=300"
+        elif html:
+            headers["Cache-Control"] = headers.get("Cache-Control") or "no-store"
+        return headers
 
     def _send_json(self, status, payload, headers=None):
         body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        for key, value in self._flatten_headers(headers):
+        merged = {**self._security_headers(), **(headers or {})}
+        if "Cache-Control" not in merged:
+            merged["Cache-Control"] = "no-store"
+        for key, value in self._flatten_headers(merged):
             self.send_header(key, str(value))
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
@@ -508,7 +536,8 @@ class UrbeHandler(BaseHTTPRequestHandler):
         body_bytes = html_text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        for key, value in self._flatten_headers(headers):
+        merged = {**self._security_headers(html=True), **(headers or {})}
+        for key, value in self._flatten_headers(merged):
             self.send_header(key, str(value))
         self.send_header("Content-Length", str(len(body_bytes)))
         self.end_headers()
@@ -540,36 +569,61 @@ class UrbeHandler(BaseHTTPRequestHandler):
 
     # API handlers
     def api_health(self, _ctx):
-        return 200, {"status": "ok", "service": "urbe"}, {}
+        return (
+            200,
+            {
+                "status": "ok",
+                "service": "urbe",
+                "env": "production" if CONFIG.is_production else "development",
+                "store": "postgres" if CONFIG.database_url else "json",
+                "payments": CONFIG.payments.provider,
+            },
+            {},
+        )
 
-    def api_payments_openpix_webhook(self, _ctx):
-        body = _ctx["body"]
-        raw_body = _ctx.get("rawBody", b"")
-        signature = self.headers.get("X-Openpix-Signature")
+    def api_payments_openpix_webhook(self, ctx):
+        body = ctx["body"]
+        raw_body = ctx.get("rawBody", b"")
+        headers = ctx.get("headers") or self.headers
+        signature = openpix_signature_from_headers(headers)
         secret = CONFIG.payments.openpix.webhook_secret
 
         if not secret:
-            return 500, {"error": "OPENPIX_WEBHOOK_SECRET nao configurado"}, {}
+            return 503, {"error": "OPENPIX_WEBHOOK_SECRET nao configurado", "code": "WEBHOOK_NOT_CONFIGURED"}, {}
 
         if not signature or not verify_openpix_signature(raw_body, signature, secret):
-            return 401, {"error": "assinatura invalida"}, {}
+            return 401, {"error": "assinatura invalida", "code": "INVALID_SIGNATURE"}, {}
 
-        event = body.get("event")
-        if event == "pix_received":
-            correlation_id = body.get("data", {}).get("correlationID")
-            if correlation_id:
-                try:
-                    result = SERVICE.confirm_order_payment(correlation_id, PAYMENT_GATEWAY)
-                    if result.get("pending"):
-                        return 200, {"status": "pending"}, {}
-                    return 200, {"status": "ok"}, {}
-                except Exception as e:
-                    print(f"Erro no webhook OpenPix: {e}")
-                    return 500, {"error": "falha interna"}, {}
-            else:
-                return 400, {"error": "correlationID ausente"}, {}
-        else:
-            return 200, {"status": "ignored"}, {}
+        event = extract_openpix_event(body)
+        correlation_id = extract_openpix_correlation_id(body)
+
+        if is_openpix_paid_event(event, body):
+            if not correlation_id:
+                return 400, {"error": "correlationID ausente", "code": "VALIDATION_ERROR"}, {}
+            try:
+                result = SERVICE.confirm_order_payment(correlation_id, PAYMENT_GATEWAY)
+                if result.get("pending"):
+                    return 200, {"status": "pending"}, {}
+                return 200, {"status": "ok"}, {}
+            except AppError as error:
+                if error.code == "ORDER_NOT_FOUND":
+                    return 200, {"status": "ignored", "reason": "order_not_found"}, {}
+                print(f"Erro no webhook OpenPix: {error.code} {error.message}")
+                return error.status, {"error": error.message, "code": error.code}, {}
+            except Exception as error:
+                print(f"Erro no webhook OpenPix: {error}")
+                return 500, {"error": "falha interna", "code": "INTERNAL_ERROR"}, {}
+
+        if is_openpix_expired_event(event) and correlation_id:
+            try:
+                SERVICE.expire_order_payment(correlation_id)
+                return 200, {"status": "expired"}, {}
+            except AppError as error:
+                if error.code == "ORDER_NOT_FOUND":
+                    return 200, {"status": "ignored", "reason": "order_not_found"}, {}
+                return error.status, {"error": error.message, "code": error.code}, {}
+
+        return 200, {"status": "ignored"}, {}
 
     def api_payments_config(self, _ctx):
         return 200, {"payments": SERVICE.get_payment_config()}, {}
@@ -699,7 +753,18 @@ class UrbeHandler(BaseHTTPRequestHandler):
         return 201, {"bunnyVideo": bunny_video, **public_video}, {}
 
 
-def run():
+def run(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--check" in args:
+        gaps = production_gaps(CONFIG)
+        if gaps:
+            print("Pendencias de lancamento:")
+            for gap in gaps:
+                print(f"- {gap}")
+            raise SystemExit(1)
+        print("Pronto para producao: persistencia, Pix, Bunny e origem publica configurados.")
+        return
+
     assert_runtime_ready(CONFIG)
     server = ThreadingHTTPServer(("0.0.0.0", CONFIG.port), UrbeHandler)
     print(f"Urbe disponivel em http://localhost:{CONFIG.port}")

@@ -3,13 +3,36 @@ primary_region = "gru"
 
 [build]
 
+[env]
+  PORT = "3000"
+  URBE_ENV = "production"
+  PAYMENTS_PROVIDER = "openpix"
+  PAYMENTS_CURRENCY = "BRL"
+  URBE_COOKIE_SECURE = "1"
+  URBE_OPEN_PUBLISH = "0"
+  PUBLIC_APP_ORIGIN = "https://urbe-app.fly.dev"
+  PAYMENTS_CHECKOUT_SUCCESS_URL = "https://urbe-app.fly.dev/?checkout=success&orderId={ORDER_ID}"
+  PAYMENTS_CHECKOUT_CANCEL_URL = "https://urbe-app.fly.dev/?checkout=cancel&orderId={ORDER_ID}"
+
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = false
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "15s"
+  method = "GET"
+  path = "/api/health"
+  timeout = "5s"
 
 [[vm]]
   memory = "512mb"
