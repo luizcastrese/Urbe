@@ -1,14 +1,35 @@
+import base64
 import copy
 import datetime as dt
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import threading
 import time
 import urllib.parse
 
 from .errors import AppError
+
+OPENPIX_PAID_EVENTS = frozenset(
+    {
+        "pix_received",
+        "charge_completed",
+        "transaction_received",
+        "openpix:charge_completed",
+        "openpix:transaction_received",
+        "openpix:charge_completed_not_same_customer_payer",
+        "openpix:movement_confirmed",
+    }
+)
+
+OPENPIX_EXPIRED_EVENTS = frozenset(
+    {
+        "charge_expired",
+        "openpix:charge_expired",
+    }
+)
 
 
 def now_iso():
@@ -147,14 +168,109 @@ def fill_template(template, values):
     return result
 
 
+def load_env_file(path):
+    if not path or not os.path.isfile(path):
+        return False
+
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if not key or key.startswith("#"):
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+    return True
+
+
+def load_local_env():
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.abspath(os.path.join(here, os.pardir))
+    for candidate in (os.path.join(os.getcwd(), ".env"), os.path.join(repo_root, ".env")):
+        if load_env_file(candidate):
+            return candidate
+    return None
+
+
+def normalize_openpix_event(event):
+    return str(event or "").strip().lower()
+
+
+def extract_openpix_event(body):
+    if not isinstance(body, dict):
+        return ""
+    return str(body.get("event") or body.get("evento") or "").strip()
+
+
+def extract_openpix_correlation_id(body):
+    if not isinstance(body, dict):
+        return ""
+
+    charge = body.get("charge") if isinstance(body.get("charge"), dict) else {}
+    data = body.get("data") if isinstance(body.get("data"), dict) else {}
+    pix = body.get("pix") if isinstance(body.get("pix"), dict) else {}
+    pix_charge = pix.get("charge") if isinstance(pix.get("charge"), dict) else {}
+
+    return str(
+        body.get("correlationID")
+        or charge.get("correlationID")
+        or data.get("correlationID")
+        or pix_charge.get("correlationID")
+        or ""
+    ).strip()
+
+
+def is_openpix_paid_event(event, body=None):
+    normalized = normalize_openpix_event(event)
+    if normalized in OPENPIX_PAID_EVENTS:
+        return True
+    if not isinstance(body, dict):
+        return False
+    charge = body.get("charge") if isinstance(body.get("charge"), dict) else {}
+    status = str(charge.get("status") or "").strip().upper()
+    return not normalized and status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
+
+
+def is_openpix_expired_event(event):
+    return normalize_openpix_event(event) in OPENPIX_EXPIRED_EVENTS
+
+
+def openpix_signature_from_headers(headers):
+    if not headers:
+        return ""
+    for name in (
+        "X-OpenPix-Signature",
+        "X-Openpix-Signature",
+        "x-openpix-signature",
+        "X-Webhook-Signature",
+        "x-webhook-signature",
+    ):
+        value = headers.get(name)
+        if value:
+            return str(value).strip()
+    return ""
+
+
 def verify_openpix_signature(raw_body, signature, secret):
     if not raw_body or not signature or not secret:
         return False
 
     raw_signature = str(signature).strip()
-    expected = hmac.new(secret.encode("utf-8"), raw_body, hashlib.sha256).hexdigest()
-
     if raw_signature.startswith("sha256="):
         raw_signature = raw_signature.split("=", 1)[1]
 
-    return hmac.compare_digest(raw_signature, expected)
+    digest = hmac.new(str(secret).encode("utf-8"), raw_body, hashlib.sha256)
+    expected_hex = digest.hexdigest()
+    expected_b64 = base64.b64encode(digest.digest()).decode("ascii")
+
+    for expected in (expected_hex, expected_hex.upper(), expected_b64):
+        if len(raw_signature) != len(expected):
+            continue
+        if hmac.compare_digest(raw_signature, expected):
+            return True
+    return False

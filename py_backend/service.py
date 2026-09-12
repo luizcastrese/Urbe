@@ -1535,6 +1535,29 @@ class UrbeService:
 
         return self.store.transaction(tx)
 
+    def expire_order_payment(self, correlation_id):
+        correlation_id = str(correlation_id or "").strip()
+        if not correlation_id:
+            raise AppError("correlationID ausente.", 400, "VALIDATION_ERROR")
+
+        def tx(db):
+            self._cleanup_expired_reservations(db)
+            order = self._order_by_correlation(db, correlation_id)
+            if not order:
+                raise AppError("Ordem de pagamento nao encontrada.", 404, "ORDER_NOT_FOUND")
+            if order.get("status") == "paid":
+                return {"alreadyPaid": True, "order": self._public_order(order)}
+            if order.get("status") != "pending":
+                return {"alreadyPaid": False, "order": self._public_order(order)}
+            now = now_iso()
+            self._release_order_reservation(db, order, now)
+            order["status"] = "expired"
+            order["failureReason"] = "Cobranca Pix expirada."
+            order["updatedAt"] = now
+            return {"alreadyPaid": False, "order": self._public_order(order)}
+
+        return self.store.transaction(tx)
+
     def _order_by_correlation(self, db, correlation_id):
         return next(
             (

@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+from .utils import load_local_env
+
 
 def env_flag(name, default=False):
     raw = os.getenv(name)
@@ -73,6 +75,7 @@ class Config:
 
 
 def load_config():
+    load_local_env()
     root_dir = os.getcwd()
     is_production = detect_production()
     database_url = os.getenv("DATABASE_URL", "").strip()

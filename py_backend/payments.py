@@ -1,4 +1,5 @@
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -54,7 +55,7 @@ class OpenPixPaymentGateway:
         self.split_percent = int(split_percent) if isinstance(split_percent, int) else 0
 
     def _request(self, method, path, json_body=None):
-        headers = {"Authorization": f"Bearer {self.app_id}", "Content-Type": "application/json"}
+        headers = {"Authorization": str(self.app_id or "").strip(), "Content-Type": "application/json"}
         data = json.dumps(json_body).encode("utf-8") if json_body else None
 
         req = urllib.request.Request(f"{self.api_base}{path}", method=method, headers=headers, data=data)

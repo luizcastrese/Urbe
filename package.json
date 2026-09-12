@@ -5,7 +5,8 @@
   "scripts": {
     "start": "python3 -m py_backend.server",
     "dev": "python3 -m py_backend.server",
-    "test": "python3 -m unittest py_backend.test_service"
+    "test": "python3 -m unittest discover -s py_backend -p \"test_*.py\"",
+    "check": "python3 -m py_backend.server --check"
   },
   "engines": {
     "python": ">=3.9"

@@ -8,114 +8,162 @@ Cada cota representa **1 visualização única**. Ao transferir a cota para outr
 - um novo token é emitido para o novo dono,
 - somente o token ativo permite liberar o player.
 
-A reprodução é integrada à Bunny.net por URL de embed (com assinatura opcional via `BUNNY_STREAM_EMBED_TOKEN_KEY`).
+A reprodução é integrada à Bunny.net por URL de embed (assinada em produção via `BUNNY_STREAM_EMBED_TOKEN_KEY`).
+O pagamento de lançamento é **Pix via OpenPix**.
 
 ## Stack
 
-- Python 3.9+ (sem frameworks externos)
-- API HTTP + frontend estático
-- Persistência local em JSON (`data/urbe-db.json`)
-- Integração Bunny Stream via API REST
-- Integração de pagamentos com provedor configurável (`mock` e `stripe`)
+- Python 3.9+ (stdlib HTTP + `psycopg` quando há Postgres)
+- API HTTP + frontend estático em `public/`
+- Persistência: JSON local em desenvolvimento, Postgres em produção (`DATABASE_URL`)
+- Bunny Stream via API REST
+- Pagamentos: `mock` (só desenvolvimento) ou `openpix`
 
-## Setup
+## Setup local
 
 ```bash
 cp .env.example .env
+python3 -m pip install -r requirements.txt
 python3 -m py_backend.server
 ```
 
 Aplicação: `http://localhost:3000`
 
-## Deploy rapido (Railway)
-
-Arquivos prontos para copiar variaveis:
-
-- `deploy/railway.mock.env.example`
-- `deploy/railway.stripe.env.example`
-
-Guia passo a passo:
-
-- `deploy/RAILWAY_DEPLOY.md`
-
-## Variáveis de ambiente
-
-Arquivo: `.env`
-
-- `PORT`: porta do servidor
-- `DB_FILE`: arquivo de persistência
-- `SESSION_DURATION_DAYS`: duração da sessão
-- `CHECKOUT_RESERVATION_MINUTES`: minutos de reserva da cota/anúncio durante checkout pendente
-- `PLAYBACK_SESSION_SECONDS`: tempo (segundos) do link de reprodução one-time
-- `BUNNY_STREAM_API_KEY`: chave da API Bunny (necessária para criar vídeo via endpoint `/api/bunny/videos`)
-- `BUNNY_STREAM_LIBRARY_ID`: biblioteca padrão Bunny
-- `BUNNY_STREAM_EMBED_TOKEN_KEY`: chave para assinatura do embed
-- `BUNNY_IFRAME_HOST`: host do iframe (padrão `https://iframe.mediadelivery.net`)
-- `PAYMENTS_PROVIDER`: `mock` ou `stripe`
-- `PAYMENTS_CURRENCY`: moeda (ex: `BRL`)
-- `PAYMENTS_CHECKOUT_SUCCESS_URL`: URL de retorno do checkout (aceita placeholders `{ORDER_ID}` e `{CHECKOUT_SESSION_ID}`)
-- `PAYMENTS_CHECKOUT_CANCEL_URL`: URL de cancelamento (aceita placeholders `{ORDER_ID}` e `{CHECKOUT_SESSION_ID}`)
-- `STRIPE_SECRET_KEY`: chave secreta Stripe (obrigatória quando `PAYMENTS_PROVIDER=stripe`)
-- `STRIPE_API_BASE`: base da API Stripe (padrão `https://api.stripe.com/v1`)
-
-## Regras de negócio implementadas
-
-1. Usuário autenticado cadastra filme com preço por cota e quantidade total.
-2. Usuário compra cota primária e recebe token de acesso ativo.
-3. Dono pode anunciar a cota no mercado secundário.
-4. Compra com pagamento usa ordem de checkout:
-   - a cota/anúncio é reservada temporariamente,
-   - a transferência só acontece após confirmação de pagamento.
-5. Ao comprar o anúncio:
-   - propriedade da cota muda,
-   - token antigo é revogado,
-   - novo token é emitido para o comprador.
-6. Ao consumir token para assistir:
-   - é emitido um link `/watch/...` de uso único e curto prazo (amarrado ao navegador por cookie),
-   - ao abrir esse link com sucesso, token vira `used` e cota vira `consumed`,
-   - visualização não pode ser repetida.
-
-## Principais endpoints
-
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `GET /api/auth/me`
-- `POST /api/movies` (autenticado)
-- `GET /api/movies`
-- `GET /api/movies/:movieId`
-- `POST /api/movies/:movieId/buy`
-- `GET /api/listings`
-- `POST /api/shares/:shareId/listings`
-- `POST /api/listings/:listingId/buy`
-- `POST /api/listings/:listingId/cancel`
-- `GET /api/payments/config`
-- `POST /api/payments/primary/:movieId/checkout`
-- `POST /api/payments/listings/:listingId/checkout`
-- `POST /api/payments/orders/:orderId/confirm`
-- `POST /api/payments/orders/:orderId/cancel`
-- `GET /api/me/shares`
-- `GET /api/me/transactions`
-- `GET /api/me/orders`
-- `POST /api/access/consume`
-- `POST /api/bunny/videos` (autenticado + Bunny API key)
+O arquivo `.env` é lido automaticamente. Variáveis já exportadas no ambiente têm prioridade.
 
 ## Testes
 
 ```bash
-python3 -m unittest py_backend.test_service
+python3 -m unittest discover -s py_backend -p "test_*.py"
 ```
 
-Os testes validam os cenários críticos:
+Os testes cobrem os cenários críticos:
 
-- revogação do token antigo após revenda;
-- consumo único do token.
-- checkout primário com aprovação de pagamento;
-- checkout de revenda com reserva e confirmação posterior.
+- revogação do token antigo após revenda
+- consumo único do token
+- falha no player Bunny sem gastar o token
+- checkout primário e de revenda
+- webhook OpenPix (`OPENPIX:CHARGE_COMPLETED`) e expiração da cobrança
+- recusa de valor divergente
+
+## Checklist de lançamento
+
+Antes do `fly deploy`, configure os segredos e rode:
+
+```bash
+URBE_ENV=production python3 -m py_backend.server --check
+```
+
+O processo só sobe em produção se isto estiver preenchido:
+
+- `DATABASE_URL`
+- `PAYMENTS_PROVIDER=openpix` (não use `mock`)
+- `OPENPIX_APP_ID`
+- `OPENPIX_WEBHOOK_SECRET`
+- `BUNNY_STREAM_API_KEY`
+- `BUNNY_STREAM_LIBRARY_ID`
+- `BUNNY_STREAM_EMBED_TOKEN_KEY`
+- `PUBLIC_APP_ORIGIN`
+
+Na OpenPix, cadastre o webhook:
+
+- URL: `https://seu-dominio/api/payments/webhook/openpix`
+- eventos: `OPENPIX:CHARGE_COMPLETED` e `OPENPIX:CHARGE_EXPIRED`
+- autorização HMAC com o mesmo valor de `OPENPIX_WEBHOOK_SECRET`
+
+Em produção, publicação de filmes fica restrita a produtores (`URBE_OPEN_PUBLISH=0`).
+Libere o estúdio com `URBE_PRODUCER_EMAILS` e/ou `URBE_PRODUCER_INVITE`.
+
+## Deploy no Fly.io
+
+Arquivos prontos:
+
+- `Dockerfile`
+- `fly.toml` (região `gru`, HTTPS, health check em `/api/health`, 1 máquina sempre ligada para o webhook Pix)
+
+```bash
+fly apps create urbe-app
+fly postgres create --name urbe-db --region gru
+fly postgres attach urbe-db -a urbe-app
+fly secrets set \
+  OPENPIX_APP_ID=... \
+  OPENPIX_WEBHOOK_SECRET=... \
+  BUNNY_STREAM_API_KEY=... \
+  BUNNY_STREAM_LIBRARY_ID=... \
+  BUNNY_STREAM_EMBED_TOKEN_KEY=... \
+  URBE_PRODUCER_EMAILS=voce@estudio.com \
+  PUBLIC_APP_ORIGIN=https://urbe-app.fly.dev
+fly deploy
+```
+
+Ajuste `PUBLIC_APP_ORIGIN` e as URLs de checkout em `fly.toml` quando o domínio definitivo estiver no ar.
+
+## Variáveis de ambiente
+
+| Variável | Função |
+| --- | --- |
+| `PORT` | Porta do servidor |
+| `URBE_ENV` | `development` ou `production` |
+| `DB_FILE` | Arquivo JSON local (só sem `DATABASE_URL`) |
+| `DATABASE_URL` | Postgres em produção |
+| `SESSION_DURATION_DAYS` | Duração da sessão |
+| `CHECKOUT_RESERVATION_MINUTES` | Reserva da cota/anúncio durante checkout |
+| `PLAYBACK_SESSION_SECONDS` | Validade do link `/watch/...` |
+| `BUNNY_STREAM_API_KEY` | API Bunny |
+| `BUNNY_STREAM_LIBRARY_ID` | Biblioteca padrão |
+| `BUNNY_STREAM_EMBED_TOKEN_KEY` | Assinatura do embed |
+| `BUNNY_IFRAME_HOST` | Host do iframe (padrão `https://iframe.mediadelivery.net`) |
+| `PAYMENTS_PROVIDER` | `mock` ou `openpix` |
+| `PAYMENTS_CURRENCY` | Moeda (ex: `BRL`) |
+| `PAYMENTS_CHECKOUT_SUCCESS_URL` | Retorno do checkout (`{ORDER_ID}`, `{CHECKOUT_SESSION_ID}`) |
+| `PAYMENTS_CHECKOUT_CANCEL_URL` | Cancelamento do checkout |
+| `OPENPIX_APP_ID` | App ID da OpenPix (header `Authorization`) |
+| `OPENPIX_WEBHOOK_SECRET` | Segredo HMAC do webhook |
+| `OPENPIX_SPLIT_PIX_KEY` | Chave Pix da plataforma no split |
+| `OPENPIX_SPLIT_PERCENT` | Percentual do split (0–100) |
+| `PUBLIC_APP_ORIGIN` | Origem pública (CORS + cookies) |
+| `URBE_COOKIE_SECURE` | Cookie `Secure` (padrão ligado em produção) |
+| `URBE_OPEN_PUBLISH` | Se `0`, só produtores publicam |
+| `URBE_PRODUCER_EMAILS` | E-mails promovidos a produtor |
+| `URBE_PRODUCER_INVITE` | Convite opcional no cadastro |
+
+## Regras de negócio
+
+1. Usuário autenticado cadastra filme com preço por cota e quantidade total.
+2. Usuário compra cota primária via Pix e recebe token de acesso ativo.
+3. Dono pode anunciar a cota no mercado secundário.
+4. Compra com pagamento usa ordem de checkout: a cota/anúncio fica reservada até a confirmação.
+5. Ao comprar o anúncio: a propriedade muda, o token antigo é revogado e um novo é emitido.
+6. Ao consumir o token: o link `/watch/...` é de uso único e curto prazo. Só vira `used` se a sessão Bunny abrir.
+
+## Principais endpoints
+
+- `GET /api/health`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `POST /api/movies` (produtor)
+- `GET /api/movies`
+- `GET /api/movies/:movieId`
+- `GET /api/listings`
+- `POST /api/shares/:shareId/listings`
+- `POST /api/listings/:listingId/cancel`
+- `POST /api/payments/primary/:movieId/checkout`
+- `POST /api/payments/listings/:listingId/checkout`
+- `POST /api/payments/orders/:orderId/confirm`
+- `POST /api/payments/orders/:orderId/cancel`
+- `POST /api/payments/webhook/openpix`
+- `GET /api/me/shares`
+- `GET /api/me/transactions`
+- `GET /api/me/orders`
+- `POST /api/access/consume`
+- `POST /api/access/resume`
+- `POST /api/bunny/videos` (produtor + chave Bunny)
 
 ## Observações de produção
 
-- Esta versão usa persistência em arquivo JSON (MVP). Para produção, trocar por banco transacional.
-- Em `PAYMENTS_PROVIDER=mock`, pagamentos são aprovados automaticamente para desenvolvimento.
-- Para produção, use `PAYMENTS_PROVIDER=stripe`, proteja segredos e adicione webhooks para conciliação financeira.
-- Adicionar antifraude, trilha de auditoria e assinatura forte de requests para hardening.
+- Persistência em arquivo JSON é só para desenvolvimento. Em produção use Postgres.
+- `PAYMENTS_PROVIDER=mock` aprova pagamento sozinho e só vale fora de produção.
+- O webhook precisa de uma máquina no ar: `fly.toml` mantém `min_machines_running = 1`.
+- Tokens de sessão ficam em cookie HttpOnly; o player Bunny exige embed assinado em produção.
