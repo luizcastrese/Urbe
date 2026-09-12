@@ -398,13 +398,6 @@ def to_public_checkout(checkout):
         "status": checkout.get("status"),
         "paid": checkout.get("paid") is True,
     }
-    if checkout.get("pixCopiaECola"):
-        payload["pixCopiaECola"] = checkout.get("pixCopiaECola")
-    qr_code = checkout.get("qrCodeBase64") or checkout.get("qrCodeImage")
-    if qr_code:
-        payload["qrCodeBase64"] = qr_code
-    if checkout.get("expiresIn") is not None:
-        payload["expiresIn"] = checkout.get("expiresIn")
     return payload
 
 
@@ -1552,7 +1545,7 @@ class UrbeService:
             now = now_iso()
             self._release_order_reservation(db, order, now)
             order["status"] = "expired"
-            order["failureReason"] = "Cobranca Pix expirada."
+            order["failureReason"] = "Checkout Stripe expirado."
             order["updatedAt"] = now
             return {"alreadyPaid": False, "order": self._public_order(order)}
 

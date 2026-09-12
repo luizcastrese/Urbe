@@ -1,4 +1,5 @@
 import json
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,121 +43,123 @@ class MockPaymentGateway:
         }
 
 
-class OpenPixPaymentGateway:
-    provider = "openpix"
+class StripePaymentGateway:
+    provider = "stripe"
 
-    def __init__(self, app_id, api_base, currency, split_pix_key="", split_percent=0):
-        if not app_id:
-            raise AppError("PAYMENTS_PROVIDER=openpix exige OPENPIX_APP_ID.", 500, "PAYMENTS_NOT_CONFIGURED")
-        self.app_id = app_id
-        self.api_base = api_base
-        self.currency = currency
-        self.split_pix_key = str(split_pix_key or "").strip()
-        self.split_percent = int(split_percent) if isinstance(split_percent, int) else 0
+    def __init__(self, secret_key, api_base, currency):
+        if not secret_key:
+            raise AppError("PAYMENTS_PROVIDER=stripe exige STRIPE_SECRET_KEY.", 500, "PAYMENTS_NOT_CONFIGURED")
+        self.secret_key = secret_key
+        self.api_base = str(api_base or "https://api.stripe.com/v1").rstrip("/")
+        self.currency = str(currency or "BRL").lower()
 
-    def _request(self, method, path, json_body=None):
-        headers = {"Authorization": str(self.app_id or "").strip(), "Content-Type": "application/json"}
-        data = json.dumps(json_body).encode("utf-8") if json_body else None
-
+    def _request(self, method, path, form_fields=None):
+        headers = {
+            "Authorization": f"Bearer {self.secret_key}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        data = urllib.parse.urlencode(form_fields or []).encode("utf-8") if form_fields is not None else None
         req = urllib.request.Request(f"{self.api_base}{path}", method=method, headers=headers, data=data)
         try:
             with urllib.request.urlopen(req, timeout=20) as response:
                 return response.status, response.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as error:
+            return error.code, error.read().decode("utf-8", errors="replace")
 
     def create_checkout_session(self, order, description, buyer, success_url, cancel_url):
-        correlation_id = order["id"]
-        payload = {
-            "correlationID": correlation_id,
-            "value": order["amountCents"],
-            "description": str(description or f"Cota Urbe - {order['movieId']}")[:100],
-            "expiresIn": 900,  # 15 minutos
-        }
-        if buyer and buyer.get("email"):
-            payload["payer"] = {"email": buyer["email"]}
+        success = str(success_url or "").replace("{ORDER_ID}", order["id"])
+        cancel = str(cancel_url or "").replace("{ORDER_ID}", order["id"])
+        if "{CHECKOUT_SESSION_ID}" not in success:
+            joiner = "&" if "?" in success else "?"
+            success = f"{success}{joiner}session_id={{CHECKOUT_SESSION_ID}}"
 
-        if self.split_pix_key and self.split_percent > 0:
-            split_value_cents = int(round(order["amountCents"] * (self.split_percent / 100)))
-            if 0 < split_value_cents < order["amountCents"]:
-                payload["splits"] = [
-                    {
-                        "pixKey": self.split_pix_key,
-                        "value": split_value_cents,
-                    }
-                ]
+        fields = [
+            ("mode", "payment"),
+            ("success_url", success),
+            ("cancel_url", cancel),
+            ("client_reference_id", order["id"]),
+            ("metadata[order_id]", order["id"]),
+            ("line_items[0][quantity]", "1"),
+            ("line_items[0][price_data][currency]", self.currency),
+            ("line_items[0][price_data][unit_amount]", str(int(order["amountCents"]))),
+            ("line_items[0][price_data][product_data][name]", str(description or f"Cota Urbe - {order['movieId']}")[:120]),
+            ("expires_at", str(int(time.time()) + 30 * 60)),
+            ("automatic_payment_methods[enabled]", "true"),
+        ]
+        email = str((buyer or {}).get("email") or "").strip()
+        if email:
+            fields.append(("customer_email", email))
 
-        status, raw_text = self._request("POST", "/charge", payload)
+        status, raw_text = self._request("POST", "/checkout/sessions", fields)
         parsed = json.loads(raw_text) if raw_text else {}
-
         if status < 200 or status >= 300:
-            raise AppError(
-                f"Falha ao criar Pix OpenPix: {parsed.get('error') or raw_text}",
-                502,
-                "OPENPIX_CHECKOUT_FAILED",
-            )
+            message = ""
+            if isinstance(parsed, dict):
+                err = parsed.get("error") or {}
+                message = err.get("message") if isinstance(err, dict) else str(err)
+            raise AppError(f"Falha ao criar checkout Stripe: {message or raw_text}", 502, "STRIPE_CHECKOUT_FAILED")
 
-        charge = parsed.get("charge", {})
-        qr_code = charge.get("qrCodeImage") or charge.get("qrCode") or parsed.get("qrCodeImage")
-        pix_code = charge.get("pixCopiaECola") or charge.get("brCode")
+        session_id = str(parsed.get("id") or "")
+        checkout_url = str(parsed.get("url") or "")
+        if not session_id or not checkout_url:
+            raise AppError("Stripe nao devolveu a URL de checkout.", 502, "STRIPE_CHECKOUT_FAILED")
+
         return {
             "provider": self.provider,
-            "sessionId": correlation_id,
-            "checkoutUrl": None,
-            "pixCopiaECola": pix_code,
-            "qrCodeBase64": qr_code,
-            "expiresIn": payload.get("expiresIn") or 900,
+            "sessionId": session_id,
+            "checkoutUrl": checkout_url,
             "paid": False,
             "amountCents": order["amountCents"],
-            "currency": self.currency,
+            "currency": str(order.get("currency") or self.currency).upper(),
             "paymentStatus": "pending",
             "status": "pending",
             "raw": parsed,
         }
 
     def get_checkout_session_status(self, session_id, expected_order):
-        status, raw_text = self._request("GET", f"/charge/{session_id}")
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            raise AppError("Sessao Stripe ausente.", 400, "VALIDATION_ERROR")
+
+        status, raw_text = self._request("GET", f"/checkout/sessions/{session_id}")
         parsed = json.loads(raw_text) if raw_text else {}
-        charge = parsed.get("charge", {}) if isinstance(parsed, dict) else {}
-        paid_status = str(charge.get("status") or "").upper()
-        paid = status < 300 and paid_status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
-        amount_cents = _charge_amount_cents(charge)
-        currency = str(charge.get("currency") or self.currency or "BRL").upper()
+        if status < 200 or status >= 300:
+            raise AppError("Falha ao consultar checkout Stripe.", 502, "STRIPE_LOOKUP_FAILED")
 
-        return {
-            "provider": self.provider,
-            "sessionId": session_id,
-            "paid": paid,
-            "amountCents": amount_cents,
-            "currency": currency,
-            "paymentStatus": "paid" if paid else "pending",
-            "status": "complete" if paid else "pending",
-            "raw": parsed,
-        }
+        return session_status_from_stripe(parsed, self.currency)
 
 
-def _charge_amount_cents(charge):
-    raw = None
-    if isinstance(charge, dict):
-        raw = charge.get("value")
-        if raw is None:
-            raw = charge.get("amount")
+def session_status_from_stripe(session, fallback_currency="BRL"):
+    session = session if isinstance(session, dict) else {}
+    payment_status = str(session.get("payment_status") or "").strip().lower()
+    session_status = str(session.get("status") or "").strip().lower()
+    paid = payment_status == "paid"
+    amount = session.get("amount_total")
     try:
-        if raw is None:
-            return None
-        return int(raw)
+        amount_cents = int(amount) if amount is not None else None
     except (TypeError, ValueError):
-        return None
+        amount_cents = None
+    currency = str(session.get("currency") or fallback_currency or "BRL").upper()
+    expired = session_status == "expired" or payment_status in {"unpaid", ""} and session_status == "expired"
+    return {
+        "provider": "stripe",
+        "sessionId": session.get("id"),
+        "paid": paid,
+        "amountCents": amount_cents,
+        "currency": currency,
+        "paymentStatus": "paid" if paid else "pending",
+        "status": "complete" if paid else ("expired" if expired else "pending"),
+        "raw": session,
+    }
 
 
 def create_payment_gateway(payments_config):
     provider = str(payments_config.provider or "mock").lower()
-    if provider == "openpix":
-        return OpenPixPaymentGateway(
-            app_id=payments_config.openpix.app_id,
-            api_base=payments_config.openpix.api_base,
+    if provider == "stripe":
+        stripe = getattr(payments_config, "stripe", None)
+        return StripePaymentGateway(
+            secret_key=getattr(stripe, "secret_key", "") if stripe else "",
+            api_base=getattr(stripe, "api_base", "https://api.stripe.com/v1") if stripe else "https://api.stripe.com/v1",
             currency=str(payments_config.currency or "BRL").upper(),
-            split_pix_key=getattr(payments_config.openpix, "split_pix_key", ""),
-            split_percent=getattr(payments_config.openpix, "split_percent", 0),
         )
     return MockPaymentGateway(currency=str(payments_config.currency or "BRL").upper())

@@ -49,13 +49,6 @@ const refs = {
   confirmTitle: document.querySelector("#confirm-title"),
   confirmCopy: document.querySelector("#confirm-copy"),
   confirmAccept: document.querySelector("#confirm-accept"),
-  pixDialog: document.querySelector("#pix-dialog"),
-  pixMovieTitle: document.querySelector("#pixMovieTitle"),
-  pixQrCode: document.querySelector("#pixQrCode"),
-  pixCopiaCola: document.querySelector("#pixCopiaCola"),
-  pixCopyBtn: document.querySelector("#pix-copy-btn"),
-  pixCheckBtn: document.querySelector("#pix-check-btn"),
-  pixTimer: document.querySelector("#pixTimer"),
   playerDialog: document.querySelector("#player-dialog"),
   playerFrame: document.querySelector("#player-frame"),
   playerTitle: document.querySelector("#player-title"),
@@ -85,10 +78,6 @@ const actionHandlers = {
   "login-to-buy": (button) => requireAuth(button.dataset.resume || "buy")
 };
 
-let pixOrderId = "";
-let pixSessionId = "";
-let pixTimerInterval = null;
-let pixPollInterval = null;
 let playbackPollInterval = null;
 let playbackShareId = "";
 let bunnyGuideTimer = null;
@@ -117,13 +106,6 @@ const BUNNY_GUIDE_STEPS = [
     caption: "Cole os dois IDs neste anúncio. Se tiver o embed, cole a URL inteira no ID do vídeo."
   }
 ];
-
-function pixImageSrc(raw) {
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  if (/^(data:|https?:)/i.test(value)) return value;
-  return `data:image/png;base64,${value}`;
-}
 
 function escapeHtml(text) {
   return String(text || "")
@@ -763,12 +745,16 @@ async function handleCheckoutReturn() {
   }
 
   if (checkoutState === "success") {
-    await api(`/api/payments/orders/${orderId}/confirm`, {
+    const result = await api(`/api/payments/orders/${orderId}/confirm`, {
       method: "POST",
       body: { sessionId: sessionId || undefined }
     });
-    notify("Pagamento confirmado. Sua cota já está no portfólio.");
-    showView("portfolio");
+    if (result.order?.status === "paid" || result.purchase || result.alreadyPaid) {
+      notify("Pagamento confirmado. Sua cota já está no portfólio.");
+      showView("portfolio");
+      return;
+    }
+    notify("A Stripe ainda está confirmando o pagamento. Sua cota libera em instantes.");
   }
 }
 
@@ -1004,11 +990,7 @@ async function createMovie(event) {
   });
 }
 
-async function handleCheckoutResponse(response, movieTitle) {
-  if (response.checkout?.provider === "openpix") {
-    mostrarModalPix({ order: response.order, checkout: response.checkout }, movieTitle);
-    return "pix";
-  }
+async function handleCheckoutResponse(response) {
   if (response.purchase) {
     notify("Pagamento aprovado. Cota liberada no seu portfólio.");
     await refreshData();
@@ -1016,22 +998,11 @@ async function handleCheckoutResponse(response, movieTitle) {
     return "done";
   }
   if (response.checkout?.checkoutUrl) {
-    notify("Redirecionando para o checkout seguro...");
+    notify("Redirecionando para o checkout Stripe...");
     window.location.href = response.checkout.checkoutUrl;
     return "redirect";
   }
-  if (response.order?.id) {
-    await api(`/api/payments/orders/${response.order.id}/confirm`, {
-      method: "POST",
-      body: { sessionId: response.checkout?.sessionId || undefined }
-    });
-    notify("Pagamento confirmado. Cota liberada.");
-    await refreshData();
-    showView("portfolio");
-    return "done";
-  }
-  await refreshData();
-  return "done";
+  throw new Error("O checkout não retornou a página de pagamento da Stripe.");
 }
 
 function requestPrimaryPurchase(movieId) {
@@ -1053,18 +1024,16 @@ function requestListingPurchase(listingId) {
 }
 
 async function buyPrimary(movieId) {
-  const movie = state.movies.find((item) => item.id === movieId);
   await withLoading(async () => {
     const response = await api(`/api/payments/primary/${movieId}/checkout`, { method: "POST", body: {} });
-    await handleCheckoutResponse(response, movie?.title || "Cota");
+    await handleCheckoutResponse(response);
   });
 }
 
 async function buyListing(listingId) {
-  const listing = state.listings.find((item) => item.id === listingId);
   await withLoading(async () => {
     const response = await api(`/api/payments/listings/${listingId}/checkout`, { method: "POST", body: {} });
-    await handleCheckoutResponse(response, listing?.movie?.title || "Cota");
+    await handleCheckoutResponse(response);
   });
 }
 
@@ -1207,107 +1176,6 @@ async function resumeWatch(shareId, movieTitle) {
   });
 }
 
-function mostrarModalPix(payload, movieTitle) {
-  const order = payload?.order || payload || {};
-  const checkout = payload?.checkout || payload || {};
-  pixOrderId = order.id || payload?.orderId || payload?.id || "";
-  pixSessionId = checkout.sessionId || payload?.sessionId || "";
-  const qrCodeRaw = checkout.qrCodeBase64 || payload?.qrCodeBase64 || "";
-  const qrCodeSrc = pixImageSrc(qrCodeRaw);
-
-  refs.pixMovieTitle.textContent = movieTitle || "Cota de visualização";
-  refs.pixQrCode.src = qrCodeSrc || "";
-  refs.pixQrCode.hidden = !qrCodeSrc;
-  refs.pixCopiaCola.value = checkout.pixCopiaECola || payload?.pixCopiaECola || "";
-
-  if (!pixOrderId) {
-    notify("Não foi possível preparar o checkout Pix.", true);
-    return;
-  }
-
-  const expiresIn = Number(checkout.expiresIn || state.payments?.checkoutReservationMinutes * 60 || 15 * 60);
-  startPixTimer(expiresIn);
-  startPixPolling();
-  refs.pixDialog.showModal();
-}
-
-function startPixTimer(totalSeconds) {
-  let timeLeft = Math.max(1, Number(totalSeconds) || 15 * 60);
-  const tick = () => {
-    const min = Math.floor(timeLeft / 60);
-    const sec = timeLeft % 60;
-    refs.pixTimer.textContent = `${min}:${sec < 10 ? "0" : ""}${sec}`;
-    if (timeLeft <= 0) {
-      clearInterval(pixTimerInterval);
-      refs.pixTimer.textContent = "Expirado";
-      stopPixPolling();
-    }
-    timeLeft -= 1;
-  };
-  clearInterval(pixTimerInterval);
-  tick();
-  pixTimerInterval = setInterval(tick, 1000);
-}
-
-function startPixPolling() {
-  stopPixPolling();
-  pixPollInterval = setInterval(() => {
-    verificarPagamentoPix({ silent: true });
-  }, 3000);
-}
-
-function stopPixPolling() {
-  if (pixPollInterval) clearInterval(pixPollInterval);
-  pixPollInterval = null;
-}
-
-async function copiarPix() {
-  const value = refs.pixCopiaCola.value;
-  if (!value) {
-    notify("Código Pix indisponível.", true);
-    return;
-  }
-  try {
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
-    else {
-      refs.pixCopiaCola.select();
-      document.execCommand("copy");
-    }
-    notify("Código Pix copiado.");
-  } catch {
-    notify("Não foi possível copiar o código Pix.", true);
-  }
-}
-
-function fecharPixModal() {
-  if (refs.pixDialog.open) refs.pixDialog.close();
-  clearInterval(pixTimerInterval);
-  stopPixPolling();
-  pixOrderId = "";
-  pixSessionId = "";
-}
-
-async function verificarPagamentoPix({ silent = false } = {}) {
-  if (!pixOrderId) return;
-  try {
-    const data = await api(`/api/payments/orders/${pixOrderId}/confirm`, {
-      method: "POST",
-      body: { sessionId: pixSessionId || undefined }
-    });
-    const isPaid = Boolean(data.purchase) || Boolean(data.alreadyPaid) || data.order?.status === "paid";
-    if (isPaid) {
-      notify("Pagamento confirmado. Token liberado.");
-      fecharPixModal();
-      await refreshData();
-      showView("portfolio");
-      return;
-    }
-    if (!silent) notify("Ainda não detectamos o pagamento. Tente de novo em alguns segundos.");
-  } catch (error) {
-    if (!silent) notify(error?.message || "Erro ao verificar pagamento", true);
-  }
-}
-
 function updatePriceHint() {
   const cents = parseReaisToCents(refs.movieForm?.priceReais?.value);
   if (!refs.priceHint) return;
@@ -1366,10 +1234,6 @@ function bindGlobalActions() {
     if (!data || data.source !== "urbe-watch") return;
     applyWatchMessage(data);
   });
-  refs.pixDialog.addEventListener("close", () => {
-    clearInterval(pixTimerInterval);
-    stopPixPolling();
-  });
   document.querySelectorAll(".dialog-close").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog")?.close());
   });
@@ -1409,8 +1273,6 @@ function bindForms() {
   refs.movieForm?.bunnyVideoId?.addEventListener("change", () => fillBunnyFieldsFromInput(true));
   refs.listingForm.addEventListener("submit", (event) => submitListing(event).catch((error) => notify(error.message, true)));
   refs.confirmForm.addEventListener("submit", (event) => submitConfirm(event).catch((error) => notify(error.message, true)));
-  refs.pixCopyBtn.addEventListener("click", () => copiarPix());
-  refs.pixCheckBtn.addEventListener("click", () => verificarPagamentoPix({ silent: false }));
   refs.movieSearch.addEventListener("input", () => {
     state.search = refs.movieSearch.value;
     renderMovies();

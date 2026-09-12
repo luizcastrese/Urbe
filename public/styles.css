@@ -1070,26 +1070,6 @@ dialog,
   gap: 0.5rem;
 }
 
-.pix-qr-wrap {
-  display: grid;
-  place-items: center;
-  padding: 0.8rem;
-  border-radius: 12px;
-  background: #fff;
-}
-
-.pix-qr-wrap img {
-  width: min(100%, 220px);
-  height: auto;
-}
-
-.pix-timer {
-  margin: 0;
-  text-align: center;
-  color: var(--muted);
-  font-weight: 500;
-}
-
 .toast.is-error {
   border-color: rgba(240, 142, 142, 0.55);
 }

@@ -1,4 +1,3 @@
-import base64
 import copy
 import datetime as dt
 import hashlib
@@ -12,22 +11,17 @@ import urllib.parse
 
 from .errors import AppError
 
-OPENPIX_PAID_EVENTS = frozenset(
+STRIPE_PAID_EVENTS = frozenset(
     {
-        "pix_received",
-        "charge_completed",
-        "transaction_received",
-        "openpix:charge_completed",
-        "openpix:transaction_received",
-        "openpix:charge_completed_not_same_customer_payer",
-        "openpix:movement_confirmed",
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
     }
 )
 
-OPENPIX_EXPIRED_EVENTS = frozenset(
+STRIPE_EXPIRED_EVENTS = frozenset(
     {
-        "charge_expired",
-        "openpix:charge_expired",
+        "checkout.session.expired",
+        "checkout.session.async_payment_failed",
     }
 )
 
@@ -197,80 +191,80 @@ def load_local_env():
     return None
 
 
-def normalize_openpix_event(event):
-    return str(event or "").strip().lower()
-
-
-def extract_openpix_event(body):
+def extract_stripe_event_type(body):
     if not isinstance(body, dict):
         return ""
-    return str(body.get("event") or body.get("evento") or "").strip()
+    return str(body.get("type") or "").strip()
 
 
-def extract_openpix_correlation_id(body):
+def extract_stripe_session(body):
     if not isinstance(body, dict):
-        return ""
-
-    charge = body.get("charge") if isinstance(body.get("charge"), dict) else {}
+        return {}
     data = body.get("data") if isinstance(body.get("data"), dict) else {}
-    pix = body.get("pix") if isinstance(body.get("pix"), dict) else {}
-    pix_charge = pix.get("charge") if isinstance(pix.get("charge"), dict) else {}
-
-    return str(
-        body.get("correlationID")
-        or charge.get("correlationID")
-        or data.get("correlationID")
-        or pix_charge.get("correlationID")
-        or ""
-    ).strip()
+    session = data.get("object") if isinstance(data.get("object"), dict) else {}
+    return session if session else {}
 
 
-def is_openpix_paid_event(event, body=None):
-    normalized = normalize_openpix_event(event)
-    if normalized in OPENPIX_PAID_EVENTS:
-        return True
-    if not isinstance(body, dict):
+def extract_stripe_order_id(body):
+    session = extract_stripe_session(body)
+    metadata = session.get("metadata") if isinstance(session.get("metadata"), dict) else {}
+    return str(session.get("client_reference_id") or metadata.get("order_id") or "").strip()
+
+
+def is_stripe_paid_event(event, body=None):
+    event_type = str(event or "").strip()
+    if event_type not in STRIPE_PAID_EVENTS:
         return False
-    charge = body.get("charge") if isinstance(body.get("charge"), dict) else {}
-    status = str(charge.get("status") or "").strip().upper()
-    return not normalized and status in {"COMPLETED", "COMPLETE", "CONCLUDED", "PAID"}
+    session = extract_stripe_session(body or {})
+    payment_status = str(session.get("payment_status") or "").strip().lower()
+    if event_type == "checkout.session.completed" and payment_status and payment_status != "paid":
+        return False
+    return True
 
 
-def is_openpix_expired_event(event):
-    return normalize_openpix_event(event) in OPENPIX_EXPIRED_EVENTS
+def is_stripe_expired_event(event):
+    return str(event or "").strip() in STRIPE_EXPIRED_EVENTS
 
 
-def openpix_signature_from_headers(headers):
+def stripe_signature_from_headers(headers):
     if not headers:
         return ""
-    for name in (
-        "X-OpenPix-Signature",
-        "X-Openpix-Signature",
-        "x-openpix-signature",
-        "X-Webhook-Signature",
-        "x-webhook-signature",
-    ):
+    for name in ("Stripe-Signature", "stripe-signature"):
         value = headers.get(name)
         if value:
             return str(value).strip()
     return ""
 
 
-def verify_openpix_signature(raw_body, signature, secret):
-    if not raw_body or not signature or not secret:
+def verify_stripe_signature(raw_body, header, secret, tolerance_seconds=300):
+    if not raw_body or not header or not secret:
+        return False
+    if isinstance(raw_body, str):
+        raw_body = raw_body.encode("utf-8")
+
+    items = {}
+    for part in str(header).split(","):
+        key, _, value = part.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        items.setdefault(key, []).append(value.strip())
+
+    timestamp = (items.get("t") or [None])[0]
+    signatures = items.get("v1") or []
+    if not timestamp or not signatures:
+        return False
+    try:
+        stamp = int(timestamp)
+    except ValueError:
+        return False
+    if abs(int(time.time()) - stamp) > int(tolerance_seconds):
         return False
 
-    raw_signature = str(signature).strip()
-    if raw_signature.startswith("sha256="):
-        raw_signature = raw_signature.split("=", 1)[1]
-
-    digest = hmac.new(str(secret).encode("utf-8"), raw_body, hashlib.sha256)
-    expected_hex = digest.hexdigest()
-    expected_b64 = base64.b64encode(digest.digest()).decode("ascii")
-
-    for expected in (expected_hex, expected_hex.upper(), expected_b64):
-        if len(raw_signature) != len(expected):
+    expected = hmac.new(str(secret).encode("utf-8"), f"{timestamp}.".encode("utf-8") + raw_body, hashlib.sha256).hexdigest()
+    for signature in signatures:
+        if len(signature) != len(expected):
             continue
-        if hmac.compare_digest(raw_signature, expected):
+        if hmac.compare_digest(signature, expected):
             return True
     return False
